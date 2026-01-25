@@ -36,8 +36,6 @@ const SettingsModal = ({
   onRequestClose,
   t,
 }: SettingsModalProps) => {
-  if (!open) return null
-
   const [appVersion, setAppVersion] = useState<string | null>(null)
   const versionText = useMemo(() => {
     if (!isTauri) return t('notAvailable')
@@ -60,8 +58,14 @@ const SettingsModal = ({
   }, [isTauri])
 
   useEffect(() => {
+    if (!open) {
+      setAppVersion(null)
+      return
+    }
     void loadAppVersion()
-  }, [loadAppVersion])
+  }, [loadAppVersion, open])
+
+  if (!open) return null
 
   return (
     <div className="modal-backdrop" onClick={onRequestClose}>
