@@ -21,6 +21,7 @@ import type {
   ToolStatusDto,
   UpdateResultDto,
 } from './components/skills/types'
+import CodexAnalyticsPanel from './components/analytics/CodexAnalyticsPanel'
 
 function App() {
   const { t, i18n } = useTranslation()
@@ -65,6 +66,7 @@ function App() {
   const [searchQuery, setSearchQuery] = useState('')
   const [sortBy, setSortBy] = useState<'updated' | 'name'>('updated')
   const [addModalTab, setAddModalTab] = useState<'local' | 'git'>('git')
+  const [activeTab, setActiveTab] = useState<'skills' | 'analytics'>('skills')
 
   const isTauri =
     typeof window !== 'undefined' &&
@@ -1222,30 +1224,57 @@ function App() {
 
       <main className="skills-main">
         <div className="dashboard-stack">
-          <FilterBar
-            sortBy={sortBy}
-            searchQuery={searchQuery}
-            loading={loading}
-            onSortChange={handleSortChange}
-            onSearchChange={handleSearchChange}
-            onRefresh={handleRefresh}
-            t={t}
-          />
-          <SkillsList
-            plan={plan}
-            visibleSkills={visibleSkills}
-            installedTools={installedTools}
-            loading={loading}
-            getGithubInfo={getGithubInfo}
-            getSkillSourceLabel={getSkillSourceLabel}
-            formatRelative={formatRelative}
-            onReviewImport={handleReviewImport}
-            onUpdateSkill={handleUpdateSkill}
-            onDeleteSkill={handleDeletePrompt}
-            onToggleTool={handleToggleToolForSkill}
-            t={t}
-          />
+          <div className="top-tabs" role="tablist" aria-label={t('tabs.title')}>
+            <button
+              type="button"
+              className={`top-tab ${activeTab === 'skills' ? 'active' : ''}`}
+              aria-selected={activeTab === 'skills'}
+              onClick={() => setActiveTab('skills')}
+            >
+              {t('tabs.skills')}
+            </button>
+            <button
+              type="button"
+              className={`top-tab ${activeTab === 'analytics' ? 'active' : ''}`}
+              aria-selected={activeTab === 'analytics'}
+              onClick={() => setActiveTab('analytics')}
+              disabled={!isTauri}
+              title={!isTauri ? t('errors.notTauri') : undefined}
+            >
+              {t('tabs.analytics')}
+            </button>
           </div>
+
+          {activeTab === 'skills' ? (
+            <>
+              <FilterBar
+                sortBy={sortBy}
+                searchQuery={searchQuery}
+                loading={loading}
+                onSortChange={handleSortChange}
+                onSearchChange={handleSearchChange}
+                onRefresh={handleRefresh}
+                t={t}
+              />
+              <SkillsList
+                plan={plan}
+                visibleSkills={visibleSkills}
+                installedTools={installedTools}
+                loading={loading}
+                getGithubInfo={getGithubInfo}
+                getSkillSourceLabel={getSkillSourceLabel}
+                formatRelative={formatRelative}
+                onReviewImport={handleReviewImport}
+                onUpdateSkill={handleUpdateSkill}
+                onDeleteSkill={handleDeletePrompt}
+                onToggleTool={handleToggleToolForSkill}
+                t={t}
+              />
+            </>
+          ) : (
+            <CodexAnalyticsPanel invokeTauri={invokeTauri} t={t} />
+          )}
+        </div>
       </main>
 
       <AddSkillModal
@@ -1338,7 +1367,7 @@ function App() {
         onInstall={handleInstallSelectedCandidates}
         t={t}
       />
-      </div>
+    </div>
   )
 }
 

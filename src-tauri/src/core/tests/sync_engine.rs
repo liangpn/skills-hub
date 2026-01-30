@@ -89,12 +89,8 @@ fn copy_overwrite_replaces_broken_symlink_target() {
     // Create a broken symlink at the target path.
     symlink(dst_dir.path().join("missing"), &target).unwrap();
 
-    let out = crate::core::sync_engine::sync_dir_copy_with_overwrite(
-        src_dir.path(),
-        &target,
-        true,
-    )
-    .unwrap();
+    let out = crate::core::sync_engine::sync_dir_copy_with_overwrite(src_dir.path(), &target, true)
+        .unwrap();
 
     assert!(matches!(out.mode_used, SyncMode::Copy));
     assert!(target.join("s/a.txt").exists());

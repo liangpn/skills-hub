@@ -1,5 +1,5 @@
 use anyhow::Context;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::core::cache_cleanup::{
@@ -9,13 +9,22 @@ use crate::core::cache_cleanup::{
     set_git_cache_ttl_secs as set_git_cache_ttl_secs_core,
 };
 use crate::core::central_repo::{ensure_central_repo, resolve_central_repo_path};
+use crate::core::codex_analytics::{
+    backfill_codex_session_days as backfill_codex_session_days_core,
+    cleanup_old_codex_events as cleanup_old_codex_events_core,
+    clear_codex_analytics as clear_codex_analytics_core, scan_codex_sessions_dir,
+    list_codex_session_days as list_codex_session_days_core, set_codex_cursors_to_eof,
+    CodexScanOptions, CodexScanStats, CodexSessionDay, ProjectMode,
+};
 use crate::core::github_search::{search_github_repos, RepoSummary};
 use crate::core::installer::{
     install_git_skill, install_git_skill_from_selection, install_local_skill, list_git_skills,
     update_managed_skill_from_source, GitSkillCandidate, InstallResult,
 };
 use crate::core::onboarding::{build_onboarding_plan, OnboardingPlan};
-use crate::core::skill_store::{SkillStore, SkillTargetRecord};
+use crate::core::skill_store::{
+    SkillStore, SkillTargetRecord, SkillUsageLeaderboardRow, SkillUsageProjectRow,
+};
 use crate::core::sync_engine::{
     copy_dir_recursive, sync_dir_for_tool_with_overwrite, sync_dir_hybrid, SyncMode,
 };
@@ -103,6 +112,157 @@ pub struct ToolStatusDto {
     pub tools: Vec<ToolInfoDto>,
     pub installed: Vec<String>,
     pub newly_installed: Vec<String>,
+}
+
+const ANALYTICS_CODEX_ENABLED_KEY: &str = "analytics_codex_enabled";
+const ANALYTICS_CODEX_INTERVAL_SECS_KEY: &str = "analytics_codex_interval_secs";
+const ANALYTICS_CODEX_PROJECT_MODE_KEY: &str = "analytics_codex_project_mode";
+const ANALYTICS_RETENTION_ENABLED_KEY: &str = "analytics_retention_enabled";
+const ANALYTICS_RETENTION_DAYS_KEY: &str = "analytics_retention_days";
+const ANALYTICS_CODEX_LAST_SCAN_MS_KEY: &str = "analytics_codex_last_scan_ms";
+
+const DEFAULT_ANALYTICS_CODEX_ENABLED: bool = false;
+const DEFAULT_ANALYTICS_CODEX_INTERVAL_SECS: i64 = 300;
+const MIN_ANALYTICS_CODEX_INTERVAL_SECS: i64 = 300;
+const MAX_ANALYTICS_CODEX_INTERVAL_SECS: i64 = 86_400; // 24h
+const DEFAULT_ANALYTICS_CODEX_PROJECT_MODE: &str = "git_root_or_workdir";
+const DEFAULT_ANALYTICS_RETENTION_ENABLED: bool = true;
+const DEFAULT_ANALYTICS_RETENTION_DAYS: i64 = 30;
+const MAX_ANALYTICS_RETENTION_DAYS: i64 = 3650;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodexAnalyticsConfigDto {
+    pub enabled: bool,
+    pub interval_secs: i64,
+    pub project_mode: String,
+    pub retention_enabled: bool,
+    pub retention_days: i64,
+    pub last_scan_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CodexScanStatsDto {
+    pub scanned_files: usize,
+    pub processed_lines: usize,
+    pub new_events: usize,
+    pub parse_errors: usize,
+    pub matched_use_skill: usize,
+    pub skipped_skill_not_found: usize,
+    pub duplicate_events: usize,
+    pub retention_deleted: usize,
+    pub now_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CodexSessionDayDto {
+    pub day: String,
+    pub files: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ClearCodexAnalyticsResultDto {
+    pub deleted_events: usize,
+    pub now_ms: i64,
+}
+
+fn parse_bool(raw: Option<String>) -> Option<bool> {
+    let v = raw?.trim().to_lowercase();
+    match v.as_str() {
+        "true" | "1" | "yes" | "y" => Some(true),
+        "false" | "0" | "no" | "n" => Some(false),
+        _ => None,
+    }
+}
+
+fn parse_i64(raw: Option<String>) -> Option<i64> {
+    raw?.trim().parse::<i64>().ok()
+}
+
+fn normalize_codex_project_mode(raw: Option<String>) -> String {
+    match raw.as_deref().map(|s| s.trim()) {
+        Some("workdir") => "workdir".to_string(),
+        Some("git_root_or_workdir") => "git_root_or_workdir".to_string(),
+        _ => DEFAULT_ANALYTICS_CODEX_PROJECT_MODE.to_string(),
+    }
+}
+
+fn project_mode_to_core(mode: &str) -> ProjectMode {
+    match mode {
+        "workdir" => ProjectMode::Workdir,
+        _ => ProjectMode::GitRootOrWorkdir,
+    }
+}
+
+fn resolve_codex_sessions_dir() -> Result<std::path::PathBuf, anyhow::Error> {
+    let home = dirs::home_dir().context("failed to resolve home directory")?;
+    Ok(home.join(".codex").join("sessions"))
+}
+
+fn resolve_codex_skills_dir() -> Result<std::path::PathBuf, anyhow::Error> {
+    let home = dirs::home_dir().context("failed to resolve home directory")?;
+    Ok(home.join(".codex").join("skills"))
+}
+
+fn get_codex_analytics_config_impl(store: &SkillStore) -> CodexAnalyticsConfigDto {
+    let enabled = parse_bool(
+        store
+            .get_setting(ANALYTICS_CODEX_ENABLED_KEY)
+            .ok()
+            .flatten(),
+    )
+    .unwrap_or(DEFAULT_ANALYTICS_CODEX_ENABLED);
+
+    let interval_secs = parse_i64(
+        store
+            .get_setting(ANALYTICS_CODEX_INTERVAL_SECS_KEY)
+            .ok()
+            .flatten(),
+    )
+    .unwrap_or(DEFAULT_ANALYTICS_CODEX_INTERVAL_SECS)
+    .clamp(
+        MIN_ANALYTICS_CODEX_INTERVAL_SECS,
+        MAX_ANALYTICS_CODEX_INTERVAL_SECS,
+    );
+
+    let project_mode = normalize_codex_project_mode(
+        store
+            .get_setting(ANALYTICS_CODEX_PROJECT_MODE_KEY)
+            .ok()
+            .flatten(),
+    );
+
+    let retention_enabled = parse_bool(
+        store
+            .get_setting(ANALYTICS_RETENTION_ENABLED_KEY)
+            .ok()
+            .flatten(),
+    )
+    .unwrap_or(DEFAULT_ANALYTICS_RETENTION_ENABLED);
+
+    let retention_days = parse_i64(
+        store
+            .get_setting(ANALYTICS_RETENTION_DAYS_KEY)
+            .ok()
+            .flatten(),
+    )
+    .unwrap_or(DEFAULT_ANALYTICS_RETENTION_DAYS)
+    .clamp(0, MAX_ANALYTICS_RETENTION_DAYS);
+
+    let last_scan_ms = parse_i64(
+        store
+            .get_setting(ANALYTICS_CODEX_LAST_SCAN_MS_KEY)
+            .ok()
+            .flatten(),
+    );
+
+    CodexAnalyticsConfigDto {
+        enabled,
+        interval_secs,
+        project_mode,
+        retention_enabled,
+        retention_days,
+        last_scan_ms,
+    }
 }
 
 #[tauri::command]
@@ -196,6 +356,273 @@ pub async fn set_git_cache_cleanup_days(
 pub async fn clear_git_cache_now(app: tauri::AppHandle) -> Result<usize, String> {
     tauri::async_runtime::spawn_blocking(move || {
         cleanup_git_cache_dirs(&app, std::time::Duration::from_secs(0))
+    })
+    .await
+    .map_err(|err| err.to_string())?
+    .map_err(format_anyhow_error)
+}
+
+#[tauri::command]
+pub async fn get_codex_analytics_config(
+    store: State<'_, SkillStore>,
+) -> Result<CodexAnalyticsConfigDto, String> {
+    let store = store.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        Ok::<_, anyhow::Error>(get_codex_analytics_config_impl(&store))
+    })
+    .await
+    .map_err(|err| err.to_string())?
+    .map_err(format_anyhow_error)
+}
+
+#[tauri::command]
+#[allow(non_snake_case)]
+pub async fn set_codex_analytics_config(
+    store: State<'_, SkillStore>,
+    config: CodexAnalyticsConfigDto,
+) -> Result<CodexAnalyticsConfigDto, String> {
+    let store = store.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let prev = get_codex_analytics_config_impl(&store);
+
+        let normalized = CodexAnalyticsConfigDto {
+            enabled: config.enabled,
+            interval_secs: config.interval_secs.clamp(
+                MIN_ANALYTICS_CODEX_INTERVAL_SECS,
+                MAX_ANALYTICS_CODEX_INTERVAL_SECS,
+            ),
+            project_mode: normalize_codex_project_mode(Some(config.project_mode)),
+            retention_enabled: config.retention_enabled,
+            retention_days: config.retention_days.clamp(0, MAX_ANALYTICS_RETENTION_DAYS),
+            last_scan_ms: prev.last_scan_ms,
+        };
+
+        store.set_setting(
+            ANALYTICS_CODEX_ENABLED_KEY,
+            if normalized.enabled { "true" } else { "false" },
+        )?;
+        store.set_setting(
+            ANALYTICS_CODEX_INTERVAL_SECS_KEY,
+            &normalized.interval_secs.to_string(),
+        )?;
+        store.set_setting(
+            ANALYTICS_CODEX_PROJECT_MODE_KEY,
+            normalized.project_mode.as_str(),
+        )?;
+        store.set_setting(
+            ANALYTICS_RETENTION_ENABLED_KEY,
+            if normalized.retention_enabled {
+                "true"
+            } else {
+                "false"
+            },
+        )?;
+        store.set_setting(
+            ANALYTICS_RETENTION_DAYS_KEY,
+            &normalized.retention_days.to_string(),
+        )?;
+
+        if !prev.enabled && normalized.enabled {
+            let sessions_dir = resolve_codex_sessions_dir()?;
+            set_codex_cursors_to_eof(&store, &sessions_dir, now_ms())?;
+        }
+
+        Ok::<_, anyhow::Error>(normalized)
+    })
+    .await
+    .map_err(|err| err.to_string())?
+    .map_err(format_anyhow_error)
+}
+
+#[tauri::command]
+pub async fn scan_codex_analytics_now(
+    store: State<'_, SkillStore>,
+) -> Result<CodexScanStatsDto, String> {
+    let store = store.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let config = get_codex_analytics_config_impl(&store);
+        let now_ms = now_ms();
+
+        if !config.enabled {
+            return Ok::<_, anyhow::Error>(CodexScanStatsDto {
+                scanned_files: 0,
+                processed_lines: 0,
+                new_events: 0,
+                parse_errors: 0,
+                matched_use_skill: 0,
+                skipped_skill_not_found: 0,
+                duplicate_events: 0,
+                retention_deleted: 0,
+                now_ms,
+            });
+        }
+
+        let sessions_dir = resolve_codex_sessions_dir()?;
+        let skills_dir = resolve_codex_skills_dir()?;
+        let stats: CodexScanStats = scan_codex_sessions_dir(
+            &store,
+            CodexScanOptions {
+                sessions_dir,
+                skills_dir,
+                now_ms,
+                project_mode: project_mode_to_core(&config.project_mode),
+            },
+        )?;
+
+        let retention_deleted = if config.retention_enabled {
+            cleanup_old_codex_events_core(&store, config.retention_days, now_ms)?
+        } else {
+            0
+        };
+
+        // Best-effort: track last scan time for UI.
+        let _ = store.set_setting(ANALYTICS_CODEX_LAST_SCAN_MS_KEY, &now_ms.to_string());
+
+        Ok::<_, anyhow::Error>(CodexScanStatsDto {
+            scanned_files: stats.scanned_files,
+            processed_lines: stats.processed_lines,
+            new_events: stats.new_events,
+            parse_errors: stats.parse_errors,
+            matched_use_skill: stats.matched_use_skill,
+            skipped_skill_not_found: stats.skipped_skill_not_found,
+            duplicate_events: stats.duplicate_events,
+            retention_deleted,
+            now_ms,
+        })
+    })
+    .await
+    .map_err(|err| err.to_string())?
+    .map_err(format_anyhow_error)
+}
+
+#[tauri::command]
+pub async fn list_codex_session_days(
+    store: State<'_, SkillStore>,
+) -> Result<Vec<CodexSessionDayDto>, String> {
+    let store = store.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let config = get_codex_analytics_config_impl(&store);
+        if !config.enabled {
+            anyhow::bail!("analytics is disabled");
+        }
+
+        let sessions_dir = resolve_codex_sessions_dir()?;
+        let items: Vec<CodexSessionDay> = list_codex_session_days_core(&sessions_dir);
+        Ok::<_, anyhow::Error>(
+            items
+                .into_iter()
+                .map(|d| CodexSessionDayDto {
+                    day: d.day,
+                    files: d.files,
+                })
+                .collect(),
+        )
+    })
+    .await
+    .map_err(|err| err.to_string())?
+    .map_err(format_anyhow_error)
+}
+
+#[tauri::command]
+pub async fn backfill_codex_analytics(
+    store: State<'_, SkillStore>,
+    days: Vec<String>,
+) -> Result<CodexScanStatsDto, String> {
+    let store = store.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let config = get_codex_analytics_config_impl(&store);
+        let now_ms = now_ms();
+
+        if !config.enabled {
+            anyhow::bail!("analytics is disabled");
+        }
+
+        let sessions_dir = resolve_codex_sessions_dir()?;
+        let skills_dir = resolve_codex_skills_dir()?;
+        let stats: CodexScanStats = backfill_codex_session_days_core(
+            &store,
+            CodexScanOptions {
+                sessions_dir,
+                skills_dir,
+                now_ms,
+                project_mode: project_mode_to_core(&config.project_mode),
+            },
+            days,
+        )?;
+
+        let retention_deleted = if config.retention_enabled {
+            cleanup_old_codex_events_core(&store, config.retention_days, now_ms)?
+        } else {
+            0
+        };
+
+        // Best-effort: track last scan time for UI.
+        let _ = store.set_setting(ANALYTICS_CODEX_LAST_SCAN_MS_KEY, &now_ms.to_string());
+
+        Ok::<_, anyhow::Error>(CodexScanStatsDto {
+            scanned_files: stats.scanned_files,
+            processed_lines: stats.processed_lines,
+            new_events: stats.new_events,
+            parse_errors: stats.parse_errors,
+            matched_use_skill: stats.matched_use_skill,
+            skipped_skill_not_found: stats.skipped_skill_not_found,
+            duplicate_events: stats.duplicate_events,
+            retention_deleted,
+            now_ms,
+        })
+    })
+    .await
+    .map_err(|err| err.to_string())?
+    .map_err(format_anyhow_error)
+}
+
+#[tauri::command]
+pub async fn clear_codex_analytics(
+    store: State<'_, SkillStore>,
+) -> Result<ClearCodexAnalyticsResultDto, String> {
+    let store = store.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let now_ms = now_ms();
+        let sessions_dir = resolve_codex_sessions_dir()?;
+        let cleared = clear_codex_analytics_core(&store, &sessions_dir, now_ms)?;
+        let _ = store.set_setting(ANALYTICS_CODEX_LAST_SCAN_MS_KEY, &now_ms.to_string());
+        Ok::<_, anyhow::Error>(ClearCodexAnalyticsResultDto {
+            deleted_events: cleared.deleted_events,
+            now_ms,
+        })
+    })
+    .await
+    .map_err(|err| err.to_string())?
+    .map_err(format_anyhow_error)
+}
+
+#[tauri::command]
+#[allow(non_snake_case)]
+pub async fn get_codex_leaderboard(
+    store: State<'_, SkillStore>,
+    sinceMs: Option<i64>,
+    limit: Option<i64>,
+) -> Result<Vec<SkillUsageLeaderboardRow>, String> {
+    let store = store.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let limit = limit.unwrap_or(50).clamp(0, 500);
+        Ok::<_, anyhow::Error>(store.get_skill_usage_leaderboard("codex", sinceMs, limit)?)
+    })
+    .await
+    .map_err(|err| err.to_string())?
+    .map_err(format_anyhow_error)
+}
+
+#[tauri::command]
+#[allow(non_snake_case)]
+pub async fn get_codex_skill_usage_details(
+    store: State<'_, SkillStore>,
+    skillId: String,
+    sinceMs: Option<i64>,
+) -> Result<Vec<SkillUsageProjectRow>, String> {
+    let store = store.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        Ok::<_, anyhow::Error>(store.get_skill_usage_by_project("codex", &skillId, sinceMs)?)
     })
     .await
     .map_err(|err| err.to_string())?

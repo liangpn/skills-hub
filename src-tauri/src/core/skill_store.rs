@@ -2,13 +2,15 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
+use serde::Serialize;
 use tauri::Manager;
+use uuid::Uuid;
 
 const DB_FILE_NAME: &str = "skills_hub.db";
 const LEGACY_APP_IDENTIFIERS: &[&str] = &["com.tauri.dev", "com.tauri.dev.skillshub"];
 
 // Schema versioning: bump when making changes and add a migration step.
-const SCHEMA_VERSION: i32 = 1;
+const SCHEMA_VERSION: i32 = 3;
 
 // Minimal schema for MVP: skills, skill_targets, settings, discovered_skills(optional).
 const SCHEMA_V1: &str = r#"
@@ -60,6 +62,38 @@ CREATE INDEX IF NOT EXISTS idx_skills_name ON skills(name);
 CREATE INDEX IF NOT EXISTS idx_skills_updated_at ON skills(updated_at);
 "#;
 
+// Schema v3: usage events store `skill_key` so we can track non-managed skills installed under
+// `~/.codex/skills/**`, while keeping an optional `managed_skill_id` link for joins.
+const SCHEMA_V3: &str = r#"
+CREATE TABLE IF NOT EXISTS skill_usage_events (
+  id TEXT PRIMARY KEY,
+  tool TEXT NOT NULL,
+  skill_key TEXT NOT NULL,
+  managed_skill_id TEXT NULL,
+  ts_ms INTEGER NOT NULL,
+  workdir TEXT NOT NULL,
+  project_path TEXT NOT NULL,
+  log_path TEXT NOT NULL,
+  log_line INTEGER NOT NULL,
+  created_at_ms INTEGER NOT NULL,
+  UNIQUE(tool, log_path, log_line),
+  FOREIGN KEY(managed_skill_id) REFERENCES skills(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS codex_scan_cursors (
+  log_path TEXT PRIMARY KEY,
+  last_line INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_skill_usage_events_key_ts
+  ON skill_usage_events(skill_key, ts_ms);
+CREATE INDEX IF NOT EXISTS idx_skill_usage_events_managed_ts
+  ON skill_usage_events(managed_skill_id, ts_ms);
+CREATE INDEX IF NOT EXISTS idx_skill_usage_events_project
+  ON skill_usage_events(project_path);
+"#;
+
 #[derive(Clone, Debug)]
 pub struct SkillStore {
     db_path: PathBuf,
@@ -93,6 +127,23 @@ pub struct SkillTargetRecord {
     pub synced_at: Option<i64>,
 }
 
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct SkillUsageLeaderboardRow {
+    pub skill_id: String,
+    pub skill_name: String,
+    pub calls: i64,
+    pub projects: i64,
+    pub tools: i64,
+    pub last_ts_ms: i64,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct SkillUsageProjectRow {
+    pub project_path: String,
+    pub calls: i64,
+    pub last_ts_ms: i64,
+}
+
 impl SkillStore {
     pub fn new(db_path: PathBuf) -> Self {
         Self { db_path }
@@ -110,6 +161,67 @@ impl SkillStore {
             let user_version: i32 = conn.query_row("PRAGMA user_version;", [], |row| row.get(0))?;
             if user_version == 0 {
                 conn.execute_batch(SCHEMA_V1)?;
+                conn.execute_batch(SCHEMA_V3)?;
+                conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+            } else if user_version == 1 {
+                conn.execute_batch(SCHEMA_V3)?;
+                conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+            } else if user_version == 2 {
+                // v2 -> v3: migrate usage events to store skill_key + optional managed_skill_id.
+                conn.execute_batch(
+                    r#"
+CREATE TABLE IF NOT EXISTS skill_usage_events_v3 (
+  id TEXT PRIMARY KEY,
+  tool TEXT NOT NULL,
+  skill_key TEXT NOT NULL,
+  managed_skill_id TEXT NULL,
+  ts_ms INTEGER NOT NULL,
+  workdir TEXT NOT NULL,
+  project_path TEXT NOT NULL,
+  log_path TEXT NOT NULL,
+  log_line INTEGER NOT NULL,
+  created_at_ms INTEGER NOT NULL,
+  UNIQUE(tool, log_path, log_line),
+  FOREIGN KEY(managed_skill_id) REFERENCES skills(id) ON DELETE SET NULL
+);
+
+INSERT INTO skill_usage_events_v3 (
+  id,
+  tool,
+  skill_key,
+  managed_skill_id,
+  ts_ms,
+  workdir,
+  project_path,
+  log_path,
+  log_line,
+  created_at_ms
+)
+SELECT
+  e.id,
+  e.tool,
+  COALESCE(s.name, e.skill_id) AS skill_key,
+  e.skill_id AS managed_skill_id,
+  e.ts_ms,
+  e.workdir,
+  e.project_path,
+  e.log_path,
+  e.log_line,
+  e.created_at_ms
+FROM skill_usage_events e
+LEFT JOIN skills s ON s.id = e.skill_id;
+
+DROP TABLE skill_usage_events;
+ALTER TABLE skill_usage_events_v3 RENAME TO skill_usage_events;
+
+CREATE INDEX IF NOT EXISTS idx_skill_usage_events_key_ts
+  ON skill_usage_events(skill_key, ts_ms);
+CREATE INDEX IF NOT EXISTS idx_skill_usage_events_managed_ts
+  ON skill_usage_events(managed_skill_id, ts_ms);
+CREATE INDEX IF NOT EXISTS idx_skill_usage_events_project
+  ON skill_usage_events(project_path);
+"#,
+                )?;
                 conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             } else if user_version > SCHEMA_VERSION {
                 anyhow::bail!(
@@ -330,6 +442,203 @@ impl SkillStore {
          FROM skill_targets",
             )?;
             let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+
+            let mut items = Vec::new();
+            for row in rows {
+                items.push(row?);
+            }
+            Ok(items)
+        })
+    }
+
+    pub fn get_codex_scan_cursor_last_line(&self, log_path: &str) -> Result<Option<i64>> {
+        self.with_conn(|conn| {
+            let mut stmt =
+                conn.prepare("SELECT last_line FROM codex_scan_cursors WHERE log_path = ?1")?;
+            let mut rows = stmt.query(params![log_path])?;
+            Ok(rows.next()?.map(|row| row.get::<_, i64>(0)).transpose()?)
+        })
+    }
+
+    pub fn upsert_codex_scan_cursor(
+        &self,
+        log_path: &str,
+        last_line: i64,
+        updated_at_ms: i64,
+    ) -> Result<()> {
+        self.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO codex_scan_cursors (log_path, last_line, updated_at_ms)
+         VALUES (?1, ?2, ?3)
+         ON CONFLICT(log_path) DO UPDATE SET
+           last_line = excluded.last_line,
+           updated_at_ms = excluded.updated_at_ms",
+                params![log_path, last_line, updated_at_ms],
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn insert_skill_usage_event(
+        &self,
+        tool: &str,
+        skill_key: &str,
+        managed_skill_id: Option<&str>,
+        ts_ms: i64,
+        workdir: &str,
+        project_path: &str,
+        log_path: &str,
+        log_line: i64,
+        created_at_ms: i64,
+    ) -> Result<bool> {
+        let id = Uuid::new_v4().to_string();
+        self.with_conn(|conn| {
+            let rows = conn.execute(
+                "INSERT OR IGNORE INTO skill_usage_events (
+          id, tool, skill_key, managed_skill_id, ts_ms, workdir, project_path, log_path, log_line, created_at_ms
+        ) VALUES (
+          ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10
+        )",
+                params![
+                    id,
+                    tool,
+                    skill_key,
+                    managed_skill_id,
+                    ts_ms,
+                    workdir,
+                    project_path,
+                    log_path,
+                    log_line,
+                    created_at_ms
+                ],
+            )?;
+            Ok(rows > 0)
+        })
+    }
+
+    pub fn delete_skill_usage_events_before(
+        &self,
+        tool: &str,
+        ts_ms_exclusive: i64,
+    ) -> Result<usize> {
+        self.with_conn(|conn| {
+            let rows = conn.execute(
+                "DELETE FROM skill_usage_events WHERE tool = ?1 AND ts_ms < ?2",
+                params![tool, ts_ms_exclusive],
+            )?;
+            Ok(rows)
+        })
+    }
+
+    pub fn delete_skill_usage_events_for_tool(&self, tool: &str) -> Result<usize> {
+        self.with_conn(|conn| {
+            let rows = conn.execute(
+                "DELETE FROM skill_usage_events WHERE tool = ?1",
+                params![tool],
+            )?;
+            Ok(rows)
+        })
+    }
+
+    pub fn clear_codex_scan_cursors(&self) -> Result<()> {
+        self.with_conn(|conn| {
+            conn.execute("DELETE FROM codex_scan_cursors", [])?;
+            Ok(())
+        })
+    }
+
+    pub fn get_skill_usage_leaderboard(
+        &self,
+        tool: &str,
+        since_ts_ms: Option<i64>,
+        limit: i64,
+    ) -> Result<Vec<SkillUsageLeaderboardRow>> {
+        let limit = limit.max(0);
+        self.with_conn(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+WITH agg AS (
+  SELECT
+    skill_key,
+    MIN(managed_skill_id) AS managed_skill_id,
+    COUNT(*) AS calls,
+    COUNT(DISTINCT project_path) AS projects,
+    COALESCE(MAX(ts_ms), 0) AS last_ts_ms
+  FROM skill_usage_events
+  WHERE tool = ?1
+    AND (?2 IS NULL OR ts_ms >= ?2)
+  GROUP BY skill_key
+)
+SELECT
+  agg.skill_key AS skill_id,
+  COALESCE(s.name, agg.skill_key) AS skill_name,
+  agg.calls,
+  agg.projects,
+  CASE
+    WHEN agg.managed_skill_id IS NULL THEN 1
+    ELSE COALESCE(t.tools, 0)
+  END AS tools,
+  agg.last_ts_ms
+FROM agg
+LEFT JOIN skills s ON s.id = agg.managed_skill_id
+LEFT JOIN (
+  SELECT skill_id, COUNT(*) AS tools
+  FROM skill_targets
+  GROUP BY skill_id
+) t ON t.skill_id = agg.managed_skill_id
+ORDER BY calls DESC, last_ts_ms DESC, skill_name ASC
+LIMIT ?3;
+"#,
+            )?;
+
+            let rows = stmt.query_map(params![tool, since_ts_ms, limit], |row| {
+                Ok(SkillUsageLeaderboardRow {
+                    skill_id: row.get(0)?,
+                    skill_name: row.get(1)?,
+                    calls: row.get(2)?,
+                    projects: row.get(3)?,
+                    tools: row.get(4)?,
+                    last_ts_ms: row.get(5)?,
+                })
+            })?;
+
+            let mut items = Vec::new();
+            for row in rows {
+                items.push(row?);
+            }
+            Ok(items)
+        })
+    }
+
+    pub fn get_skill_usage_by_project(
+        &self,
+        tool: &str,
+        skill_key: &str,
+        since_ts_ms: Option<i64>,
+    ) -> Result<Vec<SkillUsageProjectRow>> {
+        self.with_conn(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+SELECT
+  project_path,
+  COUNT(*) AS calls,
+  COALESCE(MAX(ts_ms), 0) AS last_ts_ms
+FROM skill_usage_events
+WHERE tool = ?1
+  AND skill_key = ?2
+  AND (?3 IS NULL OR ts_ms >= ?3)
+GROUP BY project_path
+ORDER BY calls DESC, last_ts_ms DESC, project_path ASC;
+"#,
+            )?;
+
+            let rows = stmt.query_map(params![tool, skill_key, since_ts_ms], |row| {
+                Ok(SkillUsageProjectRow {
+                    project_path: row.get(0)?,
+                    calls: row.get(1)?,
+                    last_ts_ms: row.get(2)?,
+                })
+            })?;
 
             let mut items = Vec::new();
             for row in rows {

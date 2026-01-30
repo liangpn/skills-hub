@@ -184,3 +184,204 @@ fn error_context_includes_db_path() {
     let msg = format!("{:#}", err);
     assert!(msg.contains("failed to open db at"), "{msg}");
 }
+
+#[test]
+fn migrates_schema_v1_to_v3_adds_analytics_tables() {
+    use rusqlite::Connection;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = dir.path().join("test.db");
+
+    // Simulate an existing v1 database created by an older app version.
+    let conn = Connection::open(&db).expect("open");
+    conn.execute_batch("PRAGMA foreign_keys = ON;")
+        .expect("pragma");
+    conn.execute_batch(
+        r#"
+CREATE TABLE IF NOT EXISTS skills (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  source_type TEXT NOT NULL,
+  source_ref TEXT NULL,
+  source_revision TEXT NULL,
+  central_path TEXT NOT NULL UNIQUE,
+  content_hash TEXT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  last_sync_at INTEGER NULL,
+  last_seen_at INTEGER NOT NULL,
+  status TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS skill_targets (
+  id TEXT PRIMARY KEY,
+  skill_id TEXT NOT NULL,
+  tool TEXT NOT NULL,
+  target_path TEXT NOT NULL,
+  mode TEXT NOT NULL,
+  status TEXT NOT NULL,
+  last_error TEXT NULL,
+  synced_at INTEGER NULL,
+  UNIQUE(skill_id, tool),
+  FOREIGN KEY(skill_id) REFERENCES skills(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS discovered_skills (
+  id TEXT PRIMARY KEY,
+  tool TEXT NOT NULL,
+  found_path TEXT NOT NULL,
+  name_guess TEXT NULL,
+  fingerprint TEXT NULL,
+  found_at INTEGER NOT NULL,
+  imported_skill_id TEXT NULL,
+  FOREIGN KEY(imported_skill_id) REFERENCES skills(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_skills_name ON skills(name);
+CREATE INDEX IF NOT EXISTS idx_skills_updated_at ON skills(updated_at);
+"#,
+    )
+    .expect("schema v1");
+    conn.pragma_update(None, "user_version", 1)
+        .expect("set user_version=1");
+    drop(conn);
+
+    let store = SkillStore::new(db);
+    store.ensure_schema().expect("ensure_schema migrates");
+
+    let conn = Connection::open(store.db_path()).expect("open2");
+    let user_version: i32 = conn
+        .query_row("PRAGMA user_version;", [], |row| row.get(0))
+        .expect("user_version");
+    assert_eq!(user_version, 3);
+
+    let tables: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='skill_usage_events';",
+            [],
+            |row| row.get(0),
+        )
+        .expect("tables");
+    assert_eq!(tables, 1);
+
+    let tables: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='codex_scan_cursors';",
+            [],
+            |row| row.get(0),
+        )
+        .expect("tables2");
+    assert_eq!(tables, 1);
+
+    // v3 schema stores skill_key and managed_skill_id.
+    let cols: Vec<String> = conn
+        .prepare("PRAGMA table_info(skill_usage_events);")
+        .expect("pragma stmt")
+        .query_map([], |row| row.get::<_, String>(1))
+        .expect("pragma rows")
+        .map(|r| r.expect("col"))
+        .collect();
+    assert!(cols.contains(&"skill_key".to_string()));
+    assert!(cols.contains(&"managed_skill_id".to_string()));
+}
+
+#[test]
+fn usage_leaderboard_aggregates_calls_projects_and_tools() {
+    use crate::core::skill_store::{SkillUsageLeaderboardRow, SkillUsageProjectRow};
+
+    let (_dir, store) = make_store();
+
+    let s1 = make_skill("s1", "skill-1", "/central/s1", 1);
+    let s2 = make_skill("s2", "skill-2", "/central/s2", 1);
+    store.upsert_skill(&s1).unwrap();
+    store.upsert_skill(&s2).unwrap();
+
+    // Two tools synced for s1.
+    store
+        .upsert_skill_target(&SkillTargetRecord {
+            id: "t1".to_string(),
+            skill_id: "s1".to_string(),
+            tool: "codex".to_string(),
+            target_path: "/target/codex".to_string(),
+            mode: "symlink".to_string(),
+            status: "ok".to_string(),
+            last_error: None,
+            synced_at: None,
+        })
+        .unwrap();
+    store
+        .upsert_skill_target(&SkillTargetRecord {
+            id: "t2".to_string(),
+            skill_id: "s1".to_string(),
+            tool: "cursor".to_string(),
+            target_path: "/target/cursor".to_string(),
+            mode: "copy".to_string(),
+            status: "ok".to_string(),
+            last_error: None,
+            synced_at: None,
+        })
+        .unwrap();
+
+    // Usage events: s1 twice (two projects), s2 once.
+    assert!(store
+        .insert_skill_usage_event(
+            "codex",
+            "skill-1",
+            Some("s1"),
+            100,
+            "/wd",
+            "/p1",
+            "/log",
+            1,
+            100
+        )
+        .unwrap());
+    assert!(store
+        .insert_skill_usage_event(
+            "codex",
+            "skill-1",
+            Some("s1"),
+            200,
+            "/wd",
+            "/p2",
+            "/log",
+            2,
+            200
+        )
+        .unwrap());
+    assert!(store
+        .insert_skill_usage_event(
+            "codex",
+            "skill-2",
+            Some("s2"),
+            300,
+            "/wd",
+            "/p1",
+            "/log",
+            3,
+            300
+        )
+        .unwrap());
+
+    let rows: Vec<SkillUsageLeaderboardRow> = store
+        .get_skill_usage_leaderboard("codex", None, 50)
+        .unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].skill_id, "skill-1");
+    assert_eq!(rows[0].calls, 2);
+    assert_eq!(rows[0].projects, 2);
+    assert_eq!(rows[0].tools, 2);
+    assert_eq!(rows[1].skill_id, "skill-2");
+    assert_eq!(rows[1].calls, 1);
+
+    let details: Vec<SkillUsageProjectRow> = store
+        .get_skill_usage_by_project("codex", "skill-1", None)
+        .unwrap();
+    assert_eq!(details.len(), 2);
+    assert_eq!(details[0].calls, 1);
+}
