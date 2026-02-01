@@ -5,6 +5,15 @@
 ## [Unreleased]
 
 ## [0.2.0] - 2026-02-01
+### 新增
+- 新增多款工具适配与显示（如 Kimi Code CLI、Augment、OpenClaw、Cline、CodeBuddy、Command Code、Continue、Crush、Junie、iFlow CLI、Kiro CLI、Kode、MCPJam、Mistral Vibe、Mux、OpenClaude IDE、OpenHands、Pi、Qoder、Qwen Code、Trae/Trae CN、Zencoder、Neovate、Pochi、AdaL 等）。
+- 前端新增共享技能目录提示与联动选择：同一全局 skills 目录的工具勾选/同步/取消同步会一起生效，并弹窗确认。
+
+### 变更
+- Antigravity 默认全局技能目录更新为 `~/.gemini/antigravity/global_skills`。
+- OpenCode 全局技能目录修正为 `~/.config/opencode/skills`。
+- 工具状态接口增加 `skills_dir` 字段，前端列表与同步逻辑改为后端驱动并按目录去重。
+- 同一 skills 目录的工具在同步/取消同步时统一写入与清理记录，避免重复文件操作与状态不一致。
 
 ## [0.1.1] - 2026-01-26
 

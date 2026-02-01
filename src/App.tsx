@@ -11,6 +11,7 @@ import DeleteModal from './components/skills/modals/DeleteModal'
 import GitPickModal from './components/skills/modals/GitPickModal'
 import ImportModal from './components/skills/modals/ImportModal'
 import NewToolsModal from './components/skills/modals/NewToolsModal'
+import SharedDirModal from './components/skills/modals/SharedDirModal'
 import SettingsModal from './components/skills/modals/SettingsModal'
 import type {
   GitSkillCandidate,
@@ -62,6 +63,10 @@ function App() {
   const [showAddModal, setShowAddModal] = useState(false)
   const [showImportModal, setShowImportModal] = useState(false)
   const [showSettingsModal, setShowSettingsModal] = useState(false)
+  const [pendingSharedToggle, setPendingSharedToggle] = useState<{
+    skill: ManagedSkill
+    toolId: string
+  } | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
   const [sortBy, setSortBy] = useState<'updated' | 'name'>('updated')
   const [addModalTab, setAddModalTab] = useState<'local' | 'git'>('git')
@@ -1192,78 +1197,73 @@ function App() {
     void handleSyncAllManagedToTools(toolStatus.newly_installed)
   }, [handleSyncAllManagedToTools, sharedToolIdsByToolId, toolStatus])
 
-  const handleToggleToolForSkill = useCallback(
+  const runToggleToolForSkill = useCallback(
     async (skill: ManagedSkill, toolId: string) => {
-    if (loading) return
-    const toolLabel = tools.find((t) => t.id === toolId)?.label ?? toolId
-    const shared = sharedToolIdsByToolId[toolId] ?? null
-    if (shared && shared.length > 1) {
-      const others = shared.filter((id) => id !== toolId)
-      const otherLabels = others.map((id) => toolLabelById[id] ?? id).join(', ')
-      const ok = window.confirm(
-        t('sharedDirConfirm', {
-          tool: toolLabel,
-          others: otherLabels,
-        }),
-      )
-      if (!ok) return
-    }
-    const target = skill.targets.find((t) => t.tool === toolId)
-    const synced = Boolean(target)
+      if (loading) return
+      const toolLabel = tools.find((t) => t.id === toolId)?.label ?? toolId
+      const target = skill.targets.find((t) => t.tool === toolId)
+      const synced = Boolean(target)
 
-    setLoading(true)
-    setLoadingStartAt(Date.now())
-    setError(null)
-    try {
-      if (synced) {
-        setActionMessage(
-          t('actions.unsyncing', { name: skill.name, tool: toolLabel }),
-        )
+      setLoading(true)
+      setLoadingStartAt(Date.now())
+      setError(null)
+      try {
+        if (synced) {
+          setActionMessage(
+            t('actions.unsyncing', { name: skill.name, tool: toolLabel }),
+          )
           await invokeTauri('unsync_skill_from_tool', {
             skillId: skill.id,
             tool: toolId,
           })
-      } else {
-        setActionMessage(
-          t('actions.syncing', { name: skill.name, tool: toolLabel }),
-        )
-        await invokeTauri('sync_skill_to_tool', {
-          sourcePath: skill.central_path,
-          skillId: skill.id,
-          tool: toolId,
-          name: skill.name,
-        })
+        } else {
+          setActionMessage(
+            t('actions.syncing', { name: skill.name, tool: toolLabel }),
+          )
+          await invokeTauri('sync_skill_to_tool', {
+            sourcePath: skill.central_path,
+            skillId: skill.id,
+            tool: toolId,
+            name: skill.name,
+          })
+        }
+        const statusText = synced
+          ? t('status.syncDisabled')
+          : t('status.syncEnabled')
+        setActionMessage(statusText)
+        setSuccessToastMessage(statusText)
+        setActionMessage(null)
+        await loadManagedSkills()
+      } catch (err) {
+        const raw = err instanceof Error ? err.message : String(err)
+        if (raw.startsWith('TARGET_EXISTS|')) {
+          const targetPath = raw.split('|')[1] ?? ''
+          setError(t('errors.targetExistsDetail', { path: targetPath }))
+        } else if (raw.startsWith('TOOL_NOT_INSTALLED|')) {
+          // Tool disappeared between detection and click; silently refresh.
+          setError(t('errors.toolNotInstalled'))
+        } else {
+          setError(raw)
+        }
+      } finally {
+        setLoading(false)
+        setLoadingStartAt(null)
       }
-        const statusText = synced ? t('status.syncDisabled') : t('status.syncEnabled')
-      setActionMessage(statusText)
-      setSuccessToastMessage(statusText)
-      setActionMessage(null)
-      await loadManagedSkills()
-    } catch (err) {
-      const raw = err instanceof Error ? err.message : String(err)
-      if (raw.startsWith('TARGET_EXISTS|')) {
-        const targetPath = raw.split('|')[1] ?? ''
-        setError(t('errors.targetExistsDetail', { path: targetPath }))
-      } else if (raw.startsWith('TOOL_NOT_INSTALLED|')) {
-        // Tool disappeared between detection and click; silently refresh.
-        setError(t('errors.toolNotInstalled'))
-      } else {
-        setError(raw)
-      }
-    } finally {
-      setLoading(false)
-      setLoadingStartAt(null)
-    }
     },
-    [
-      invokeTauri,
-      loadManagedSkills,
-      loading,
-      sharedToolIdsByToolId,
-      t,
-      toolLabelById,
-      tools,
-    ],
+    [invokeTauri, loadManagedSkills, loading, t, tools],
+  )
+
+  const handleToggleToolForSkill = useCallback(
+    (skill: ManagedSkill, toolId: string) => {
+      if (loading) return
+      const shared = sharedToolIdsByToolId[toolId] ?? null
+      if (shared && shared.length > 1) {
+        setPendingSharedToggle({ skill, toolId })
+        return
+      }
+      void runToggleToolForSkill(skill, toolId)
+    },
+    [loading, runToggleToolForSkill, sharedToolIdsByToolId],
   )
 
   const handleUpdateManaged = useCallback(
@@ -1296,6 +1296,29 @@ function App() {
     },
     [handleUpdateManaged],
   )
+
+  const handleSharedCancel = useCallback(() => {
+    if (loading) return
+    setPendingSharedToggle(null)
+  }, [loading])
+
+  const handleSharedConfirm = useCallback(() => {
+    if (!pendingSharedToggle) return
+    const payload = pendingSharedToggle
+    setPendingSharedToggle(null)
+    void runToggleToolForSkill(payload.skill, payload.toolId)
+  }, [pendingSharedToggle, runToggleToolForSkill])
+
+  const pendingSharedLabels = useMemo(() => {
+    if (!pendingSharedToggle) return null
+    const toolId = pendingSharedToggle.toolId
+    const shared = sharedToolIdsByToolId[toolId] ?? []
+    const others = shared.filter((id) => id !== toolId)
+    return {
+      toolLabel: toolLabelById[toolId] ?? toolId,
+      otherLabels: others.map((id) => toolLabelById[id] ?? id).join(', '),
+    }
+  }, [pendingSharedToggle, sharedToolIdsByToolId, toolLabelById])
 
   return (
     <div className="skills-app">
@@ -1387,6 +1410,16 @@ function App() {
           t={t}
         />
       ) : null}
+
+      <SharedDirModal
+        open={Boolean(pendingSharedToggle)}
+        loading={loading}
+        toolLabel={pendingSharedLabels?.toolLabel ?? ''}
+        otherLabels={pendingSharedLabels?.otherLabels ?? ''}
+        onRequestClose={handleSharedCancel}
+        onConfirm={handleSharedConfirm}
+        t={t}
+      />
 
       <SettingsModal
         open={showSettingsModal}

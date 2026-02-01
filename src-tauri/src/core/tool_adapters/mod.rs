@@ -135,8 +135,8 @@ pub fn default_tool_adapters() -> Vec<ToolAdapter> {
         ToolAdapter {
             id: ToolId::OpenCode,
             display_name: "OpenCode",
-            // add-skill global path: ~/.config/opencode/skill/
-            relative_skills_dir: ".config/opencode/skill",
+            // add-skill global path: ~/.config/opencode/skills/
+            relative_skills_dir: ".config/opencode/skills",
             relative_detect_dir: ".config/opencode",
         },
         ToolAdapter {

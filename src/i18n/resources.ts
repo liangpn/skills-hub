@@ -66,6 +66,7 @@ export const resources = {
       deleteBody:
         'This will delete the managed record and remove synced links created by this app.',
       cancel: 'Cancel',
+      confirm: 'Confirm',
       confirmRemove: 'Remove',
       maintenance: 'Maintenance',
       storagePath: 'Storage path',
@@ -314,6 +315,7 @@ export const resources = {
       deleteTitle: '确认移除？',
       deleteBody: '将删除托管记录，并清理由本应用创建的同步链接。',
       cancel: '取消',
+      confirm: '确认',
       confirmRemove: '确认移除',
       maintenance: '维护',
       storagePath: '存储路径',
