@@ -21,9 +21,35 @@
 | `cursor` | Cursor | `.cursor/skills` | `.cursor` |
 | `claude_code` | Claude Code | `.claude/skills` | `.claude` |
 | `codex` | Codex | `.codex/skills` | `.codex` |
-| `opencode` | OpenCode | `.config/opencode/skill` | `.config/opencode` |
-| `antigravity` | Antigravity | `.gemini/antigravity/skills` | `.gemini/antigravity` |
+| `opencode` | OpenCode | `.config/opencode/skills` | `.config/opencode` |
+| `antigravity` | Antigravity | `.gemini/antigravity/global_skills` | `.gemini/antigravity` |
 | `amp` | Amp | `.config/agents/skills` | `.config/agents` |
+| `kimi_cli` | Kimi Code CLI | `.config/agents/skills` | `.config/agents` |
+| `augment` | Augment | `.augment/rules` | `.augment` |
+| `openclaw` | OpenClaw | `.moltbot/skills` | `.moltbot` |
+| `cline` | Cline | `.cline/skills` | `.cline` |
+| `codebuddy` | CodeBuddy | `.codebuddy/skills` | `.codebuddy` |
+| `command_code` | Command Code | `.commandcode/skills` | `.commandcode` |
+| `continue` | Continue | `.continue/skills` | `.continue` |
+| `crush` | Crush | `.config/crush/skills` | `.config/crush` |
+| `junie` | Junie | `.junie/skills` | `.junie` |
+| `iflow_cli` | iFlow CLI | `.iflow/skills` | `.iflow` |
+| `kiro_cli` | Kiro CLI | `.kiro/skills` | `.kiro` |
+| `kode` | Kode | `.kode/skills` | `.kode` |
+| `mcpjam` | MCPJam | `.mcpjam/skills` | `.mcpjam` |
+| `mistral_vibe` | Mistral Vibe | `.vibe/skills` | `.vibe` |
+| `mux` | Mux | `.mux/skills` | `.mux` |
+| `openclaude` | OpenClaude IDE | `.openclaude/skills` | `.openclaude` |
+| `openhands` | OpenHands | `.openhands/skills` | `.openhands` |
+| `pi` | Pi | `.pi/agent/skills` | `.pi` |
+| `qoder` | Qoder | `.qoder/skills` | `.qoder` |
+| `qwen_code` | Qwen Code | `.qwen/skills` | `.qwen` |
+| `trae` | Trae | `.trae/skills` | `.trae` |
+| `trae_cn` | Trae CN | `.trae-cn/skills` | `.trae-cn` |
+| `zencoder` | Zencoder | `.zencoder/skills` | `.zencoder` |
+| `neovate` | Neovate | `.neovate/skills` | `.neovate` |
+| `pochi` | Pochi | `.pochi/skills` | `.pochi` |
+| `adal` | AdaL | `.adal/skills` | `.adal` |
 | `kilo_code` | Kilo Code | `.kilocode/skills` | `.kilocode` |
 | `roo_code` | Roo Code | `.roo/skills` | `.roo` |
 | `goose` | Goose | `.config/goose/skills` | `.config/goose` |

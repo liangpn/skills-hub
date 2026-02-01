@@ -49,6 +49,14 @@ export type GitSkillCandidate = {
   subpath: string
 }
 
+export type LocalSkillCandidate = {
+  name: string
+  description?: string | null
+  subpath: string
+  valid: boolean
+  reason?: string | null
+}
+
 export type InstallResultDto = {
   skill_id: string
   name: string
@@ -60,6 +68,7 @@ export type ToolInfoDto = {
   key: string
   label: string
   installed: boolean
+  skills_dir: string
 }
 
 export type ToolStatusDto = {

@@ -1239,6 +1239,14 @@
   background: var(--bg-panel);
 }
 
+.pick-item.disabled {
+  opacity: 0.6;
+}
+
+.pick-item.disabled .pick-item-title {
+  color: var(--text-secondary);
+}
+
 .pick-toolbar {
   display: flex;
   justify-content: space-between;
@@ -1284,6 +1292,11 @@
   color: var(--text-secondary);
   font-size: 12px;
   word-break: break-all;
+}
+
+.pick-item-reason {
+  color: var(--danger);
+  font-size: 12px;
 }
 
 .inline-checkbox {

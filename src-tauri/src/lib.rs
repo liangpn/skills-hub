@@ -72,6 +72,8 @@ pub fn run() {
             commands::clear_git_cache_now,
             commands::get_onboarding_plan,
             commands::install_local,
+            commands::list_local_skills_cmd,
+            commands::install_local_selection,
             commands::install_git,
             commands::list_git_skills_cmd,
             commands::install_git_selection,

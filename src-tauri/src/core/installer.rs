@@ -487,6 +487,15 @@ pub struct GitSkillCandidate {
     pub subpath: String,
 }
 
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct LocalSkillCandidate {
+    pub name: String,
+    pub description: Option<String>,
+    pub subpath: String,
+    pub valid: bool,
+    pub reason: Option<String>,
+}
+
 pub fn list_git_skills<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     store: &SkillStore,
@@ -577,6 +586,116 @@ pub fn list_git_skills<R: tauri::Runtime>(
     Ok(out)
 }
 
+pub fn list_local_skills(base_path: &Path) -> Result<Vec<LocalSkillCandidate>> {
+    if !base_path.exists() {
+        anyhow::bail!("source path not found: {:?}", base_path);
+    }
+
+    let mut out: Vec<LocalSkillCandidate> = Vec::new();
+
+    let root_skill = base_path.join("SKILL.md");
+    if root_skill.exists() {
+        match parse_skill_md_with_reason(&root_skill) {
+            Ok((name, desc)) => {
+                out.push(LocalSkillCandidate {
+                    name,
+                    description: desc,
+                    subpath: ".".to_string(),
+                    valid: true,
+                    reason: None,
+                });
+            }
+            Err(reason) => {
+                let fallback_name = base_path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
+                out.push(LocalSkillCandidate {
+                    name: if fallback_name.is_empty() {
+                        "root-skill".to_string()
+                    } else {
+                        fallback_name
+                    },
+                    description: None,
+                    subpath: ".".to_string(),
+                    valid: false,
+                    reason: Some(reason.to_string()),
+                });
+            }
+        }
+    }
+
+    for base in [
+        "skills",
+        "skills/.curated",
+        "skills/.experimental",
+        "skills/.system",
+    ] {
+        let base_dir = base_path.join(base);
+        if !base_dir.exists() {
+            continue;
+        }
+        if let Ok(rd) = std::fs::read_dir(&base_dir) {
+            for entry in rd.flatten() {
+                let p = entry.path();
+                if !p.is_dir() {
+                    continue;
+                }
+                let skill_md = p.join("SKILL.md");
+                let rel = p
+                    .strip_prefix(base_path)
+                    .unwrap_or(&p)
+                    .to_string_lossy()
+                    .to_string();
+                if !skill_md.exists() {
+                    out.push(LocalSkillCandidate {
+                        name: p
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .to_string(),
+                        description: None,
+                        subpath: rel,
+                        valid: false,
+                        reason: Some("missing_skill_md".to_string()),
+                    });
+                    continue;
+                }
+                match parse_skill_md_with_reason(&skill_md) {
+                    Ok((name, desc)) => {
+                        out.push(LocalSkillCandidate {
+                            name,
+                            description: desc,
+                            subpath: rel,
+                            valid: true,
+                            reason: None,
+                        });
+                    }
+                    Err(reason) => {
+                        out.push(LocalSkillCandidate {
+                            name: p
+                                .file_name()
+                                .unwrap_or_default()
+                                .to_string_lossy()
+                                .to_string(),
+                            description: None,
+                            subpath: rel,
+                            valid: false,
+                            reason: Some(reason.to_string()),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out.dedup_by(|a, b| a.subpath == b.subpath);
+
+    Ok(out)
+}
+
 pub fn install_git_skill_from_selection<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     store: &SkillStore,
@@ -639,6 +758,38 @@ pub fn install_git_skill_from_selection<R: tauri::Runtime>(
         central_path,
         content_hash,
     })
+}
+
+pub fn install_local_skill_from_selection<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    store: &SkillStore,
+    base_path: &Path,
+    subpath: &str,
+    name: Option<String>,
+) -> Result<InstallResult> {
+    if !base_path.exists() {
+        anyhow::bail!("source path not found: {:?}", base_path);
+    }
+
+    let selected_dir = if subpath == "." {
+        base_path.to_path_buf()
+    } else {
+        base_path.join(subpath)
+    };
+    if !selected_dir.exists() {
+        anyhow::bail!("source path not found: {:?}", selected_dir);
+    }
+
+    let skill_md = selected_dir.join("SKILL.md");
+    if !skill_md.exists() {
+        anyhow::bail!("SKILL_INVALID|missing_skill_md");
+    }
+    let (parsed_name, _desc) = parse_skill_md_with_reason(&skill_md)
+        .map_err(|reason| anyhow::anyhow!("SKILL_INVALID|{}", reason))?;
+
+    let display_name = name.unwrap_or(parsed_name);
+
+    install_local_skill(app, store, &selected_dir, Some(display_name))
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -740,16 +891,22 @@ fn repo_cache_key(clone_url: &str, branch: Option<&str>) -> String {
 }
 
 fn parse_skill_md(path: &Path) -> Option<(String, Option<String>)> {
-    let text = std::fs::read_to_string(path).ok()?;
+    parse_skill_md_with_reason(path).ok()
+}
+
+fn parse_skill_md_with_reason(path: &Path) -> Result<(String, Option<String>), &'static str> {
+    let text = std::fs::read_to_string(path).map_err(|_| "read_failed")?;
     let mut lines = text.lines();
-    if lines.next()?.trim() != "---" {
-        return None;
+    if lines.next().map(|v| v.trim()) != Some("---") {
+        return Err("invalid_frontmatter");
     }
     let mut name: Option<String> = None;
     let mut desc: Option<String> = None;
+    let mut found_end = false;
     for line in lines.by_ref() {
         let l = line.trim();
         if l == "---" {
+            found_end = true;
             break;
         }
         if let Some(v) = l.strip_prefix("name:") {
@@ -758,8 +915,11 @@ fn parse_skill_md(path: &Path) -> Option<(String, Option<String>)> {
             desc = Some(v.trim().trim_matches('"').to_string());
         }
     }
-    let name = name?;
-    Some((name, desc))
+    if !found_end {
+        return Err("invalid_frontmatter");
+    }
+    let name = name.ok_or("missing_name")?;
+    Ok((name, desc))
 }
 
 #[cfg(test)]

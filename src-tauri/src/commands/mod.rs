@@ -11,8 +11,9 @@ use crate::core::cache_cleanup::{
 use crate::core::central_repo::{ensure_central_repo, resolve_central_repo_path};
 use crate::core::github_search::{search_github_repos, RepoSummary};
 use crate::core::installer::{
-    install_git_skill, install_git_skill_from_selection, install_local_skill, list_git_skills,
-    update_managed_skill_from_source, GitSkillCandidate, InstallResult,
+    install_git_skill, install_git_skill_from_selection, install_local_skill,
+    install_local_skill_from_selection, list_git_skills, list_local_skills,
+    update_managed_skill_from_source, GitSkillCandidate, InstallResult, LocalSkillCandidate,
 };
 use crate::core::onboarding::{build_onboarding_plan, OnboardingPlan};
 use crate::core::skill_store::{SkillStore, SkillTargetRecord};
@@ -96,6 +97,7 @@ pub struct ToolInfoDto {
     pub key: String,
     pub label: String,
     pub installed: bool,
+    pub skills_dir: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -116,10 +118,12 @@ pub async fn get_tool_status(store: State<'_, SkillStore>) -> Result<ToolStatusD
         for adapter in &adapters {
             let ok = is_tool_installed(adapter)?;
             let key = adapter.id.as_key().to_string();
+            let skills_dir = resolve_default_path(adapter)?.to_string_lossy().to_string();
             tools.push(ToolInfoDto {
                 key: key.clone(),
                 label: adapter.display_name.to_string(),
                 installed: ok,
+                skills_dir,
             });
             if ok {
                 installed.push(key);
@@ -344,6 +348,39 @@ pub async fn install_local(
 
 #[tauri::command]
 #[allow(non_snake_case)]
+pub async fn list_local_skills_cmd(basePath: String) -> Result<Vec<LocalSkillCandidate>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = std::path::PathBuf::from(basePath);
+        list_local_skills(&path)
+    })
+    .await
+    .map_err(|err| err.to_string())?
+    .map_err(format_anyhow_error)
+}
+
+#[tauri::command]
+#[allow(non_snake_case)]
+pub async fn install_local_selection(
+    app: tauri::AppHandle,
+    store: State<'_, SkillStore>,
+    basePath: String,
+    subpath: String,
+    name: Option<String>,
+) -> Result<InstallResultDto, String> {
+    let store = store.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let base = std::path::PathBuf::from(basePath);
+        let result =
+            install_local_skill_from_selection(&app, &store, base.as_ref(), &subpath, name)?;
+        Ok::<_, anyhow::Error>(to_install_dto(result))
+    })
+    .await
+    .map_err(|err| err.to_string())?
+    .map_err(format_anyhow_error)
+}
+
+#[tauri::command]
+#[allow(non_snake_case)]
 pub async fn install_git(
     app: tauri::AppHandle,
     store: State<'_, SkillStore>,
@@ -452,23 +489,30 @@ pub async fn sync_skill_to_tool(
                     }
                 })?;
 
-        let record = SkillTargetRecord {
-            id: Uuid::new_v4().to_string(),
-            skill_id: skillId,
-            tool,
-            target_path: result.target_path.to_string_lossy().to_string(),
-            mode: match result.mode_used {
-                SyncMode::Auto => "auto",
-                SyncMode::Symlink => "symlink",
-                SyncMode::Junction => "junction",
-                SyncMode::Copy => "copy",
+        // Some tools share the same global skills directory; keep DB records consistent across them.
+        let group = crate::core::tool_adapters::adapters_sharing_skills_dir(&adapter);
+        for a in group {
+            if !is_tool_installed(&a)? {
+                continue;
             }
-            .to_string(),
-            status: "ok".to_string(),
-            last_error: None,
-            synced_at: Some(now_ms()),
-        };
-        store.upsert_skill_target(&record)?;
+            let record = SkillTargetRecord {
+                id: Uuid::new_v4().to_string(),
+                skill_id: skillId.clone(),
+                tool: a.id.as_key().to_string(),
+                target_path: result.target_path.to_string_lossy().to_string(),
+                mode: match result.mode_used {
+                    SyncMode::Auto => "auto",
+                    SyncMode::Symlink => "symlink",
+                    SyncMode::Junction => "junction",
+                    SyncMode::Copy => "copy",
+                }
+                .to_string(),
+                status: "ok".to_string(),
+                last_error: None,
+                synced_at: Some(now_ms()),
+            };
+            store.upsert_skill_target(&record)?;
+        }
 
         Ok::<_, anyhow::Error>(SyncResultDto {
             mode_used: match result.mode_used {
@@ -495,17 +539,38 @@ pub async fn unsync_skill_from_tool(
 ) -> Result<(), String> {
     let store = store.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        // If the tool is not installed, do nothing (treat as already not effective).
-        if let Some(adapter) = adapter_by_key(&tool) {
-            if !is_tool_installed(&adapter)? {
+        // Some tools share the same global skills directory; unsync should update all of them.
+        let group_tool_keys: Vec<String> = if let Some(adapter) = adapter_by_key(&tool) {
+            let group = crate::core::tool_adapters::adapters_sharing_skills_dir(&adapter);
+            // If none of the group tools are installed, do nothing (treat as already not effective).
+            let mut any_installed = false;
+            for a in &group {
+                if is_tool_installed(a)? {
+                    any_installed = true;
+                    break;
+                }
+            }
+            if !any_installed {
                 return Ok::<_, anyhow::Error>(());
             }
-        }
+            group
+                .into_iter()
+                .map(|a| a.id.as_key().to_string())
+                .collect()
+        } else {
+            vec![tool.clone()]
+        };
 
-        if let Some(target) = store.get_skill_target(&skillId, &tool)? {
-            // Remove the link/copy in tool directory first, then delete DB record.
-            remove_path_any(&target.target_path).map_err(anyhow::Error::msg)?;
-            store.delete_skill_target(&skillId, &tool)?;
+        // Remove filesystem target once (shared dir => shared target path).
+        let mut removed = false;
+        for k in &group_tool_keys {
+            if let Some(target) = store.get_skill_target(&skillId, k)? {
+                if !removed {
+                    remove_path_any(&target.target_path).map_err(anyhow::Error::msg)?;
+                    removed = true;
+                }
+                store.delete_skill_target(&skillId, k)?;
+            }
         }
 
         Ok::<_, anyhow::Error>(())

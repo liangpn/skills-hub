@@ -10,6 +10,32 @@ pub enum ToolId {
     OpenCode,
     Antigravity,
     Amp,
+    KimiCli,
+    Augment,
+    Openclaw,
+    Cline,
+    CodeBuddy,
+    CommandCode,
+    Continue,
+    Crush,
+    Junie,
+    IflowCli,
+    KiroCli,
+    Kode,
+    McpJam,
+    MistralVibe,
+    Mux,
+    OpenClaude,
+    OpenHands,
+    Pi,
+    Qoder,
+    QwenCode,
+    Trae,
+    TraeCn,
+    Zencoder,
+    Neovate,
+    Pochi,
+    AdaL,
     KiloCode,
     RooCode,
     Goose,
@@ -29,6 +55,32 @@ impl ToolId {
             ToolId::OpenCode => "opencode",
             ToolId::Antigravity => "antigravity",
             ToolId::Amp => "amp",
+            ToolId::KimiCli => "kimi_cli",
+            ToolId::Augment => "augment",
+            ToolId::Openclaw => "openclaw",
+            ToolId::Cline => "cline",
+            ToolId::CodeBuddy => "codebuddy",
+            ToolId::CommandCode => "command_code",
+            ToolId::Continue => "continue",
+            ToolId::Crush => "crush",
+            ToolId::Junie => "junie",
+            ToolId::IflowCli => "iflow_cli",
+            ToolId::KiroCli => "kiro_cli",
+            ToolId::Kode => "kode",
+            ToolId::McpJam => "mcpjam",
+            ToolId::MistralVibe => "mistral_vibe",
+            ToolId::Mux => "mux",
+            ToolId::OpenClaude => "openclaude",
+            ToolId::OpenHands => "openhands",
+            ToolId::Pi => "pi",
+            ToolId::Qoder => "qoder",
+            ToolId::QwenCode => "qwen_code",
+            ToolId::Trae => "trae",
+            ToolId::TraeCn => "trae_cn",
+            ToolId::Zencoder => "zencoder",
+            ToolId::Neovate => "neovate",
+            ToolId::Pochi => "pochi",
+            ToolId::AdaL => "adal",
             ToolId::KiloCode => "kilo_code",
             ToolId::RooCode => "roo_code",
             ToolId::Goose => "goose",
@@ -83,15 +135,15 @@ pub fn default_tool_adapters() -> Vec<ToolAdapter> {
         ToolAdapter {
             id: ToolId::OpenCode,
             display_name: "OpenCode",
-            // add-skill global path: ~/.config/opencode/skill/
-            relative_skills_dir: ".config/opencode/skill",
+            // add-skill global path: ~/.config/opencode/skills/
+            relative_skills_dir: ".config/opencode/skills",
             relative_detect_dir: ".config/opencode",
         },
         ToolAdapter {
             id: ToolId::Antigravity,
             display_name: "Antigravity",
-            // add-skill global path: ~/.gemini/antigravity/skills/
-            relative_skills_dir: ".gemini/antigravity/skills",
+            // add-skill global path: ~/.gemini/antigravity/global_skills/
+            relative_skills_dir: ".gemini/antigravity/global_skills",
             relative_detect_dir: ".gemini/antigravity",
         },
         ToolAdapter {
@@ -100,6 +152,189 @@ pub fn default_tool_adapters() -> Vec<ToolAdapter> {
             // add-skill global path: ~/.config/agents/skills/
             relative_skills_dir: ".config/agents/skills",
             relative_detect_dir: ".config/agents",
+        },
+        ToolAdapter {
+            id: ToolId::KimiCli,
+            display_name: "Kimi Code CLI",
+            // add-skill global path: ~/.config/agents/skills/
+            // NOTE: Shares the same skills directory with Amp.
+            relative_skills_dir: ".config/agents/skills",
+            relative_detect_dir: ".config/agents",
+        },
+        ToolAdapter {
+            id: ToolId::Augment,
+            display_name: "Augment",
+            // add-skill global path: ~/.augment/rules/
+            relative_skills_dir: ".augment/rules",
+            relative_detect_dir: ".augment",
+        },
+        ToolAdapter {
+            id: ToolId::Openclaw,
+            display_name: "OpenClaw",
+            // add-skill global path: ~/.moltbot/skills/
+            relative_skills_dir: ".moltbot/skills",
+            relative_detect_dir: ".moltbot",
+        },
+        ToolAdapter {
+            id: ToolId::Cline,
+            display_name: "Cline",
+            // add-skill global path: ~/.cline/skills/
+            relative_skills_dir: ".cline/skills",
+            relative_detect_dir: ".cline",
+        },
+        ToolAdapter {
+            id: ToolId::CodeBuddy,
+            display_name: "CodeBuddy",
+            // add-skill global path: ~/.codebuddy/skills/
+            relative_skills_dir: ".codebuddy/skills",
+            relative_detect_dir: ".codebuddy",
+        },
+        ToolAdapter {
+            id: ToolId::CommandCode,
+            display_name: "Command Code",
+            // add-skill global path: ~/.commandcode/skills/
+            relative_skills_dir: ".commandcode/skills",
+            relative_detect_dir: ".commandcode",
+        },
+        ToolAdapter {
+            id: ToolId::Continue,
+            display_name: "Continue",
+            // add-skill global path: ~/.continue/skills/
+            relative_skills_dir: ".continue/skills",
+            relative_detect_dir: ".continue",
+        },
+        ToolAdapter {
+            id: ToolId::Crush,
+            display_name: "Crush",
+            // add-skill global path: ~/.config/crush/skills/
+            relative_skills_dir: ".config/crush/skills",
+            relative_detect_dir: ".config/crush",
+        },
+        ToolAdapter {
+            id: ToolId::Junie,
+            display_name: "Junie",
+            // add-skill global path: ~/.junie/skills/
+            relative_skills_dir: ".junie/skills",
+            relative_detect_dir: ".junie",
+        },
+        ToolAdapter {
+            id: ToolId::IflowCli,
+            display_name: "iFlow CLI",
+            // add-skill global path: ~/.iflow/skills/
+            relative_skills_dir: ".iflow/skills",
+            relative_detect_dir: ".iflow",
+        },
+        ToolAdapter {
+            id: ToolId::KiroCli,
+            display_name: "Kiro CLI",
+            // add-skill global path: ~/.kiro/skills/
+            relative_skills_dir: ".kiro/skills",
+            relative_detect_dir: ".kiro",
+        },
+        ToolAdapter {
+            id: ToolId::Kode,
+            display_name: "Kode",
+            // add-skill global path: ~/.kode/skills/
+            relative_skills_dir: ".kode/skills",
+            relative_detect_dir: ".kode",
+        },
+        ToolAdapter {
+            id: ToolId::McpJam,
+            display_name: "MCPJam",
+            // add-skill global path: ~/.mcpjam/skills/
+            relative_skills_dir: ".mcpjam/skills",
+            relative_detect_dir: ".mcpjam",
+        },
+        ToolAdapter {
+            id: ToolId::MistralVibe,
+            display_name: "Mistral Vibe",
+            // add-skill global path: ~/.vibe/skills/
+            relative_skills_dir: ".vibe/skills",
+            relative_detect_dir: ".vibe",
+        },
+        ToolAdapter {
+            id: ToolId::Mux,
+            display_name: "Mux",
+            // add-skill global path: ~/.mux/skills/
+            relative_skills_dir: ".mux/skills",
+            relative_detect_dir: ".mux",
+        },
+        ToolAdapter {
+            id: ToolId::OpenClaude,
+            display_name: "OpenClaude IDE",
+            // add-skill global path: ~/.openclaude/skills/
+            relative_skills_dir: ".openclaude/skills",
+            relative_detect_dir: ".openclaude",
+        },
+        ToolAdapter {
+            id: ToolId::OpenHands,
+            display_name: "OpenHands",
+            // add-skill global path: ~/.openhands/skills/
+            relative_skills_dir: ".openhands/skills",
+            relative_detect_dir: ".openhands",
+        },
+        ToolAdapter {
+            id: ToolId::Pi,
+            display_name: "Pi",
+            // add-skill global path: ~/.pi/agent/skills/
+            relative_skills_dir: ".pi/agent/skills",
+            relative_detect_dir: ".pi",
+        },
+        ToolAdapter {
+            id: ToolId::Qoder,
+            display_name: "Qoder",
+            // add-skill global path: ~/.qoder/skills/
+            relative_skills_dir: ".qoder/skills",
+            relative_detect_dir: ".qoder",
+        },
+        ToolAdapter {
+            id: ToolId::QwenCode,
+            display_name: "Qwen Code",
+            // add-skill global path: ~/.qwen/skills/
+            relative_skills_dir: ".qwen/skills",
+            relative_detect_dir: ".qwen",
+        },
+        ToolAdapter {
+            id: ToolId::Trae,
+            display_name: "Trae",
+            // add-skill global path: ~/.trae/skills/
+            relative_skills_dir: ".trae/skills",
+            relative_detect_dir: ".trae",
+        },
+        ToolAdapter {
+            id: ToolId::TraeCn,
+            display_name: "Trae CN",
+            // add-skill global path: ~/.trae-cn/skills/
+            relative_skills_dir: ".trae-cn/skills",
+            relative_detect_dir: ".trae-cn",
+        },
+        ToolAdapter {
+            id: ToolId::Zencoder,
+            display_name: "Zencoder",
+            // add-skill global path: ~/.zencoder/skills/
+            relative_skills_dir: ".zencoder/skills",
+            relative_detect_dir: ".zencoder",
+        },
+        ToolAdapter {
+            id: ToolId::Neovate,
+            display_name: "Neovate",
+            // add-skill global path: ~/.neovate/skills/
+            relative_skills_dir: ".neovate/skills",
+            relative_detect_dir: ".neovate",
+        },
+        ToolAdapter {
+            id: ToolId::Pochi,
+            display_name: "Pochi",
+            // add-skill global path: ~/.pochi/skills/
+            relative_skills_dir: ".pochi/skills",
+            relative_detect_dir: ".pochi",
+        },
+        ToolAdapter {
+            id: ToolId::AdaL,
+            display_name: "AdaL",
+            // add-skill global path: ~/.adal/skills/
+            relative_skills_dir: ".adal/skills",
+            relative_detect_dir: ".adal",
         },
         ToolAdapter {
             id: ToolId::KiloCode,
@@ -158,6 +393,15 @@ pub fn default_tool_adapters() -> Vec<ToolAdapter> {
             relative_detect_dir: ".codeium/windsurf",
         },
     ]
+}
+
+/// Tools can share the same global skills directory (e.g. Amp and Kimi Code CLI).
+/// Use this to coordinate UI warnings and avoid duplicate filesystem operations.
+pub fn adapters_sharing_skills_dir(adapter: &ToolAdapter) -> Vec<ToolAdapter> {
+    default_tool_adapters()
+        .into_iter()
+        .filter(|a| a.relative_skills_dir == adapter.relative_skills_dir)
+        .collect()
 }
 
 pub fn adapter_by_key(key: &str) -> Option<ToolAdapter> {

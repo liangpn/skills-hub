@@ -251,3 +251,79 @@ fn install_git_skill_errors_on_multi_skills_repo_root() {
     };
     assert!(format!("{:#}", err).contains("MULTI_SKILLS|"));
 }
+
+#[test]
+fn lists_local_skills_with_invalid_entries() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path();
+    fs::create_dir_all(base.join("skills/a")).unwrap();
+    fs::create_dir_all(base.join("skills/b")).unwrap();
+    fs::create_dir_all(base.join("skills/c")).unwrap();
+    fs::create_dir_all(base.join("skills/d")).unwrap();
+
+    fs::write(base.join("skills/a/SKILL.md"), "---\nname: A\n---\n").unwrap();
+    fs::write(base.join("skills/c/SKILL.md"), "name: C\n").unwrap();
+    fs::write(base.join("skills/d/SKILL.md"), "---\ndescription: D\n---\n").unwrap();
+
+    let list = super::list_local_skills(base).unwrap();
+
+    let find = |subpath: &str| list.iter().find(|c| c.subpath == subpath).cloned();
+
+    let a = find("skills/a").expect("skills/a");
+    assert!(a.valid);
+    assert_eq!(a.name, "A");
+
+    let b = find("skills/b").expect("skills/b");
+    assert!(!b.valid);
+    assert_eq!(b.reason.as_deref(), Some("missing_skill_md"));
+
+    let c = find("skills/c").expect("skills/c");
+    assert!(!c.valid);
+    assert_eq!(c.reason.as_deref(), Some("invalid_frontmatter"));
+
+    let d = find("skills/d").expect("skills/d");
+    assert!(!d.valid);
+    assert_eq!(d.reason.as_deref(), Some("missing_name"));
+}
+
+#[test]
+fn install_local_selection_validates_skill_md() {
+    let app = tauri::test::mock_app();
+    let (_dir, store) = make_store();
+
+    let central_root = tempfile::tempdir().unwrap();
+    set_central_path(&store, central_root.path());
+
+    let base = tempfile::tempdir().unwrap();
+    fs::create_dir_all(base.path().join("skills/a")).unwrap();
+    fs::create_dir_all(base.path().join("skills/b")).unwrap();
+    fs::write(
+        base.path().join("skills/a/SKILL.md"),
+        "---\nname: Local A\n---\n",
+    )
+    .unwrap();
+
+    let res = super::install_local_skill_from_selection(
+        app.handle(),
+        &store,
+        base.path(),
+        "skills/a",
+        None,
+    )
+    .unwrap();
+    assert!(res.central_path.exists());
+    let skill = store.get_skill_by_id(&res.skill_id).unwrap().unwrap();
+    assert_eq!(skill.name, "Local A");
+
+    let err = match super::install_local_skill_from_selection(
+        app.handle(),
+        &store,
+        base.path(),
+        "skills/b",
+        None,
+    ) {
+        Ok(_) => panic!("expected error"),
+        Err(e) => e,
+    };
+    assert!(format!("{:#}", err).contains("SKILL_INVALID|missing_skill_md"));
+}

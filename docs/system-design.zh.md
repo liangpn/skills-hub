@@ -162,9 +162,35 @@ flowchart LR
 | `cursor` | Cursor | `.cursor/skills` | `.cursor` |
 | `claude_code` | Claude Code | `.claude/skills` | `.claude` |
 | `codex` | Codex | `.codex/skills` | `.codex` |
-| `opencode` | OpenCode | `.config/opencode/skill` | `.config/opencode` |
-| `antigravity` | Antigravity | `.gemini/antigravity/skills` | `.gemini/antigravity` |
+| `opencode` | OpenCode | `.config/opencode/skills` | `.config/opencode` |
+| `antigravity` | Antigravity | `.gemini/antigravity/global_skills` | `.gemini/antigravity` |
 | `amp` | Amp | `.config/agents/skills` | `.config/agents` |
+| `kimi_cli` | Kimi Code CLI | `.config/agents/skills` | `.config/agents` |
+| `augment` | Augment | `.augment/rules` | `.augment` |
+| `openclaw` | OpenClaw | `.moltbot/skills` | `.moltbot` |
+| `cline` | Cline | `.cline/skills` | `.cline` |
+| `codebuddy` | CodeBuddy | `.codebuddy/skills` | `.codebuddy` |
+| `command_code` | Command Code | `.commandcode/skills` | `.commandcode` |
+| `continue` | Continue | `.continue/skills` | `.continue` |
+| `crush` | Crush | `.config/crush/skills` | `.config/crush` |
+| `junie` | Junie | `.junie/skills` | `.junie` |
+| `iflow_cli` | iFlow CLI | `.iflow/skills` | `.iflow` |
+| `kiro_cli` | Kiro CLI | `.kiro/skills` | `.kiro` |
+| `kode` | Kode | `.kode/skills` | `.kode` |
+| `mcpjam` | MCPJam | `.mcpjam/skills` | `.mcpjam` |
+| `mistral_vibe` | Mistral Vibe | `.vibe/skills` | `.vibe` |
+| `mux` | Mux | `.mux/skills` | `.mux` |
+| `openclaude` | OpenClaude IDE | `.openclaude/skills` | `.openclaude` |
+| `openhands` | OpenHands | `.openhands/skills` | `.openhands` |
+| `pi` | Pi | `.pi/agent/skills` | `.pi` |
+| `qoder` | Qoder | `.qoder/skills` | `.qoder` |
+| `qwen_code` | Qwen Code | `.qwen/skills` | `.qwen` |
+| `trae` | Trae | `.trae/skills` | `.trae` |
+| `trae_cn` | Trae CN | `.trae-cn/skills` | `.trae-cn` |
+| `zencoder` | Zencoder | `.zencoder/skills` | `.zencoder` |
+| `neovate` | Neovate | `.neovate/skills` | `.neovate` |
+| `pochi` | Pochi | `.pochi/skills` | `.pochi` |
+| `adal` | AdaL | `.adal/skills` | `.adal` |
 | `kilo_code` | Kilo Code | `.kilocode/skills` | `.kilocode` |
 | `roo_code` | Roo Code | `.roo/skills` | `.roo` |
 | `goose` | Goose | `.config/goose/skills` | `.config/goose` |
@@ -529,7 +555,9 @@ sequenceDiagram
 
 #### 添加 Skill（Local/Git）
 
-- local：`install_local` -> 对选中工具逐个 `sync_skill_to_tool`
+- local：先 `list_local_skills_cmd` 扫描目录（规则与 Git 一致），
+  - 多个候选则弹出选择列表（无效候选置灰并标注原因）
+  - 单个有效候选则 `install_local_selection` -> 对选中工具逐个 `sync_skill_to_tool`
 - git：
   - folder URL：直接 `install_git` -> 同步
   - repo root URL：`list_git_skills_cmd` -> GitPickModal 选择 -> `install_git_selection` -> 同步

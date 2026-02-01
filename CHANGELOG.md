@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-02-01
+
+### Added
+- Support and display for many new tools (e.g., Kimi Code CLI, Augment, OpenClaw, Cline, CodeBuddy, Command Code, Continue, Crush, Junie, iFlow CLI, Kiro CLI, Kode, MCPJam, Mistral Vibe, Mux, OpenClaude IDE, OpenHands, Pi, Qoder, Qwen Code, Trae/Trae CN, Zencoder, Neovate, Pochi, AdaL).
+- UI confirmation and linked selection for tools that share the same global skills directory.
+- Local import multi-skill discovery aligned with Git rules, with a selection list and invalid-item reasons.
+- New local import commands for listing candidates and installing a selected subpath with SKILL.md validation.
+
+### Changed
+- Antigravity global skills directory updated to `~/.gemini/antigravity/global_skills`.
+- OpenCode global skills directory corrected to `~/.config/opencode/skills`.
+- Tool status now includes `skills_dir`; frontend tool list/sync is driven by backend data and deduped by directory.
+- Sync/unsync now updates records across tools sharing a skills directory to avoid duplicate filesystem work and inconsistent state.
+- Local import flow now scans candidates first; single valid candidate installs directly, multi-candidate opens selection.
+
 ## [0.1.1] - 2026-01-26
 
 ### Changed

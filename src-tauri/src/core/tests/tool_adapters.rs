@@ -1,11 +1,32 @@
 use std::fs;
 
-use crate::core::tool_adapters::{adapter_by_key, scan_tool_dir, ToolAdapter, ToolId};
+use crate::core::tool_adapters::{
+    adapter_by_key, adapters_sharing_skills_dir, scan_tool_dir, ToolAdapter, ToolId,
+};
 
 #[test]
 fn adapter_by_key_finds_known_tool() {
     let a = adapter_by_key("codex").unwrap();
     assert_eq!(a.id, ToolId::Codex);
+}
+
+#[test]
+fn adapter_by_key_finds_new_tools() {
+    assert!(adapter_by_key("kimi_cli").is_some());
+    assert!(adapter_by_key("augment").is_some());
+    assert!(adapter_by_key("openclaw").is_some());
+    assert!(adapter_by_key("command_code").is_some());
+    assert!(adapter_by_key("qwen_code").is_some());
+}
+
+#[test]
+fn adapters_sharing_skills_dir_groups_amp_and_kimi() {
+    let amp = adapter_by_key("amp").unwrap();
+    let group = adapters_sharing_skills_dir(&amp);
+    let keys: std::collections::HashSet<&'static str> =
+        group.into_iter().map(|a| a.id.as_key()).collect();
+    assert!(keys.contains("amp"));
+    assert!(keys.contains("kimi_cli"));
 }
 
 #[test]
