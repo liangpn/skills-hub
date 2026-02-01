@@ -10,7 +10,7 @@ const DB_FILE_NAME: &str = "skills_hub.db";
 const LEGACY_APP_IDENTIFIERS: &[&str] = &["com.tauri.dev", "com.tauri.dev.skillshub"];
 
 // Schema versioning: bump when making changes and add a migration step.
-const SCHEMA_VERSION: i32 = 3;
+const SCHEMA_VERSION: i32 = 5;
 
 // Minimal schema for MVP: skills, skill_targets, settings, discovered_skills(optional).
 const SCHEMA_V1: &str = r#"
@@ -94,6 +94,43 @@ CREATE INDEX IF NOT EXISTS idx_skill_usage_events_project
   ON skill_usage_events(project_path);
 "#;
 
+// Schema v4: LLM provider + agent configs.
+const SCHEMA_V4: &str = r#"
+CREATE TABLE IF NOT EXISTS llm_providers (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE,
+  provider_type TEXT NOT NULL,
+  base_url TEXT NULL,
+  api_key_env TEXT NULL,
+  default_model TEXT NULL,
+  created_at_ms INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS llm_agents (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE,
+  provider_id TEXT NOT NULL,
+  model TEXT NULL,
+  prompt_md TEXT NOT NULL,
+  created_at_ms INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL,
+  FOREIGN KEY(provider_id) REFERENCES llm_providers(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_llm_providers_updated_at
+  ON llm_providers(updated_at_ms);
+CREATE INDEX IF NOT EXISTS idx_llm_agents_updated_at
+  ON llm_agents(updated_at_ms);
+CREATE INDEX IF NOT EXISTS idx_llm_agents_provider
+  ON llm_agents(provider_id);
+"#;
+
+// Schema v5: Allow storing provider API keys in sqlite (local-only).
+const SCHEMA_V5: &str = r#"
+ALTER TABLE llm_providers ADD COLUMN api_key TEXT NULL;
+"#;
+
 #[derive(Clone, Debug)]
 pub struct SkillStore {
     db_path: PathBuf,
@@ -144,6 +181,31 @@ pub struct SkillUsageProjectRow {
     pub last_ts_ms: i64,
 }
 
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct LlmProviderRecord {
+    pub id: String,
+    pub name: String,
+    pub provider_type: String,
+    pub base_url: Option<String>,
+    pub api_key_env: Option<String>,
+    #[serde(skip_serializing)]
+    pub api_key: Option<String>,
+    pub default_model: Option<String>,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct LlmAgentRecord {
+    pub id: String,
+    pub name: String,
+    pub provider_id: String,
+    pub model: Option<String>,
+    pub prompt_md: String,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
 impl SkillStore {
     pub fn new(db_path: PathBuf) -> Self {
         Self { db_path }
@@ -162,9 +224,13 @@ impl SkillStore {
             if user_version == 0 {
                 conn.execute_batch(SCHEMA_V1)?;
                 conn.execute_batch(SCHEMA_V3)?;
+                conn.execute_batch(SCHEMA_V4)?;
+                conn.execute_batch(SCHEMA_V5)?;
                 conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             } else if user_version == 1 {
                 conn.execute_batch(SCHEMA_V3)?;
+                conn.execute_batch(SCHEMA_V4)?;
+                conn.execute_batch(SCHEMA_V5)?;
                 conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             } else if user_version == 2 {
                 // v2 -> v3: migrate usage events to store skill_key + optional managed_skill_id.
@@ -222,6 +288,15 @@ CREATE INDEX IF NOT EXISTS idx_skill_usage_events_project
   ON skill_usage_events(project_path);
 "#,
                 )?;
+                conn.execute_batch(SCHEMA_V4)?;
+                conn.execute_batch(SCHEMA_V5)?;
+                conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+            } else if user_version == 3 {
+                conn.execute_batch(SCHEMA_V4)?;
+                conn.execute_batch(SCHEMA_V5)?;
+                conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+            } else if user_version == 4 {
+                conn.execute_batch(SCHEMA_V5)?;
                 conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             } else if user_version > SCHEMA_VERSION {
                 anyhow::bail!(
@@ -448,6 +523,201 @@ CREATE INDEX IF NOT EXISTS idx_skill_usage_events_project
                 items.push(row?);
             }
             Ok(items)
+        })
+    }
+
+    pub fn list_llm_providers(&self) -> Result<Vec<LlmProviderRecord>> {
+        self.with_conn(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT id, name, provider_type, base_url, api_key_env, api_key, default_model, created_at_ms, updated_at_ms
+         FROM llm_providers
+         ORDER BY updated_at_ms DESC",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok(LlmProviderRecord {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    provider_type: row.get(2)?,
+                    base_url: row.get(3)?,
+                    api_key_env: row.get(4)?,
+                    api_key: row.get(5)?,
+                    default_model: row.get(6)?,
+                    created_at_ms: row.get(7)?,
+                    updated_at_ms: row.get(8)?,
+                })
+            })?;
+
+            let mut items = Vec::new();
+            for row in rows {
+                items.push(row?);
+            }
+            Ok(items)
+        })
+    }
+
+    pub fn get_llm_provider_by_id(&self, id: &str) -> Result<Option<LlmProviderRecord>> {
+        self.with_conn(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT id, name, provider_type, base_url, api_key_env, api_key, default_model, created_at_ms, updated_at_ms
+         FROM llm_providers
+         WHERE id = ?1
+         LIMIT 1",
+            )?;
+            let mut rows = stmt.query(params![id])?;
+            if let Some(row) = rows.next()? {
+                Ok(Some(LlmProviderRecord {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    provider_type: row.get(2)?,
+                    base_url: row.get(3)?,
+                    api_key_env: row.get(4)?,
+                    api_key: row.get(5)?,
+                    default_model: row.get(6)?,
+                    created_at_ms: row.get(7)?,
+                    updated_at_ms: row.get(8)?,
+                }))
+            } else {
+                Ok(None)
+            }
+        })
+    }
+
+    pub fn upsert_llm_provider(&self, record: &LlmProviderRecord) -> Result<()> {
+        self.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO llm_providers (
+          id, name, provider_type, base_url, api_key_env, api_key, default_model, created_at_ms, updated_at_ms
+        ) VALUES (
+          ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9
+        )
+        ON CONFLICT(id) DO UPDATE SET
+          name = excluded.name,
+          provider_type = excluded.provider_type,
+          base_url = excluded.base_url,
+          api_key_env = excluded.api_key_env,
+          api_key = excluded.api_key,
+          default_model = excluded.default_model,
+          created_at_ms = excluded.created_at_ms,
+          updated_at_ms = excluded.updated_at_ms",
+                params![
+                    record.id,
+                    record.name,
+                    record.provider_type,
+                    record.base_url,
+                    record.api_key_env,
+                    record.api_key,
+                    record.default_model,
+                    record.created_at_ms,
+                    record.updated_at_ms
+                ],
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn count_llm_agents_for_provider(&self, provider_id: &str) -> Result<i64> {
+        self.with_conn(|conn| {
+            let count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM llm_agents WHERE provider_id = ?1",
+                params![provider_id],
+                |row| row.get(0),
+            )?;
+            Ok(count)
+        })
+    }
+
+    pub fn delete_llm_provider(&self, provider_id: &str) -> Result<()> {
+        self.with_conn(|conn| {
+            conn.execute("DELETE FROM llm_providers WHERE id = ?1", params![provider_id])?;
+            Ok(())
+        })
+    }
+
+    pub fn list_llm_agents(&self) -> Result<Vec<LlmAgentRecord>> {
+        self.with_conn(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT id, name, provider_id, model, prompt_md, created_at_ms, updated_at_ms
+         FROM llm_agents
+         ORDER BY updated_at_ms DESC",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok(LlmAgentRecord {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    provider_id: row.get(2)?,
+                    model: row.get(3)?,
+                    prompt_md: row.get(4)?,
+                    created_at_ms: row.get(5)?,
+                    updated_at_ms: row.get(6)?,
+                })
+            })?;
+
+            let mut items = Vec::new();
+            for row in rows {
+                items.push(row?);
+            }
+            Ok(items)
+        })
+    }
+
+    pub fn get_llm_agent_by_id(&self, id: &str) -> Result<Option<LlmAgentRecord>> {
+        self.with_conn(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT id, name, provider_id, model, prompt_md, created_at_ms, updated_at_ms
+         FROM llm_agents
+         WHERE id = ?1
+         LIMIT 1",
+            )?;
+            let mut rows = stmt.query(params![id])?;
+            if let Some(row) = rows.next()? {
+                Ok(Some(LlmAgentRecord {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    provider_id: row.get(2)?,
+                    model: row.get(3)?,
+                    prompt_md: row.get(4)?,
+                    created_at_ms: row.get(5)?,
+                    updated_at_ms: row.get(6)?,
+                }))
+            } else {
+                Ok(None)
+            }
+        })
+    }
+
+    pub fn upsert_llm_agent(&self, record: &LlmAgentRecord) -> Result<()> {
+        self.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO llm_agents (
+          id, name, provider_id, model, prompt_md, created_at_ms, updated_at_ms
+        ) VALUES (
+          ?1, ?2, ?3, ?4, ?5, ?6, ?7
+        )
+        ON CONFLICT(id) DO UPDATE SET
+          name = excluded.name,
+          provider_id = excluded.provider_id,
+          model = excluded.model,
+          prompt_md = excluded.prompt_md,
+          created_at_ms = excluded.created_at_ms,
+          updated_at_ms = excluded.updated_at_ms",
+                params![
+                    record.id,
+                    record.name,
+                    record.provider_id,
+                    record.model,
+                    record.prompt_md,
+                    record.created_at_ms,
+                    record.updated_at_ms
+                ],
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn delete_llm_agent(&self, agent_id: &str) -> Result<()> {
+        self.with_conn(|conn| {
+            conn.execute("DELETE FROM llm_agents WHERE id = ?1", params![agent_id])?;
+            Ok(())
         })
     }
 

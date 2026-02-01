@@ -22,6 +22,11 @@ import type {
   UpdateResultDto,
 } from './components/skills/types'
 import CodexAnalyticsPanel from './components/analytics/CodexAnalyticsPanel'
+import WorkRulesPanel from './components/workRules/WorkRulesPanel'
+import RefineryPanel from './components/refinery/RefineryPanel'
+import AgentsPanel from './components/agents/AgentsPanel'
+import ProvidersPanel from './components/providers/ProvidersPanel'
+import SkillAuditPanel from './components/audit/SkillAuditPanel'
 
 function App() {
   const { t, i18n } = useTranslation()
@@ -66,7 +71,9 @@ function App() {
   const [searchQuery, setSearchQuery] = useState('')
   const [sortBy, setSortBy] = useState<'updated' | 'name'>('updated')
   const [addModalTab, setAddModalTab] = useState<'local' | 'git'>('git')
-  const [activeTab, setActiveTab] = useState<'skills' | 'analytics'>('skills')
+  const [activeTab, setActiveTab] = useState<
+    'skills' | 'analytics' | 'work_rules' | 'refinery' | 'audit' | 'providers' | 'agents'
+  >('skills')
 
   const isTauri =
     typeof window !== 'undefined' &&
@@ -1243,6 +1250,56 @@ function App() {
             >
               {t('tabs.analytics')}
             </button>
+            <button
+              type="button"
+              className={`top-tab ${activeTab === 'work_rules' ? 'active' : ''}`}
+              aria-selected={activeTab === 'work_rules'}
+              onClick={() => setActiveTab('work_rules')}
+              disabled={!isTauri}
+              title={!isTauri ? t('errors.notTauri') : undefined}
+            >
+              {t('tabs.workRules')}
+            </button>
+            <button
+              type="button"
+              className={`top-tab ${activeTab === 'refinery' ? 'active' : ''}`}
+              aria-selected={activeTab === 'refinery'}
+              onClick={() => setActiveTab('refinery')}
+              disabled={!isTauri}
+              title={!isTauri ? t('errors.notTauri') : undefined}
+            >
+              {t('tabs.refinery')}
+            </button>
+            <button
+              type="button"
+              className={`top-tab ${activeTab === 'audit' ? 'active' : ''}`}
+              aria-selected={activeTab === 'audit'}
+              onClick={() => setActiveTab('audit')}
+              disabled={!isTauri}
+              title={!isTauri ? t('errors.notTauri') : undefined}
+            >
+              {t('tabs.audit')}
+            </button>
+            <button
+              type="button"
+              className={`top-tab ${activeTab === 'providers' ? 'active' : ''}`}
+              aria-selected={activeTab === 'providers'}
+              onClick={() => setActiveTab('providers')}
+              disabled={!isTauri}
+              title={!isTauri ? t('errors.notTauri') : undefined}
+            >
+              {t('tabs.providers')}
+            </button>
+            <button
+              type="button"
+              className={`top-tab ${activeTab === 'agents' ? 'active' : ''}`}
+              aria-selected={activeTab === 'agents'}
+              onClick={() => setActiveTab('agents')}
+              disabled={!isTauri}
+              title={!isTauri ? t('errors.notTauri') : undefined}
+            >
+              {t('tabs.agents')}
+            </button>
           </div>
 
           {activeTab === 'skills' ? (
@@ -1271,8 +1328,23 @@ function App() {
                 t={t}
               />
             </>
-          ) : (
+          ) : activeTab === 'analytics' ? (
             <CodexAnalyticsPanel invokeTauri={invokeTauri} t={t} />
+          ) : activeTab === 'work_rules' ? (
+            <WorkRulesPanel isTauri={isTauri} invokeTauri={invokeTauri} t={t} />
+          ) : activeTab === 'refinery' ? (
+            <RefineryPanel
+              isTauri={isTauri}
+              invokeTauri={invokeTauri}
+              managedSkills={managedSkills}
+              t={t}
+            />
+          ) : activeTab === 'audit' ? (
+            <SkillAuditPanel isTauri={isTauri} invokeTauri={invokeTauri} t={t} />
+          ) : activeTab === 'providers' ? (
+            <ProvidersPanel isTauri={isTauri} invokeTauri={invokeTauri} t={t} />
+          ) : (
+            <AgentsPanel isTauri={isTauri} invokeTauri={invokeTauri} t={t} />
           )}
         </div>
       </main>

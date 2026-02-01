@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Skills Hub Repo Deep Dive Report</title>
+  <style>
+    :root {
+      --bg: #0b0f14;
+      --panel: #0f1621;
+      --text: #e6edf3;
+      --muted: #9aa7b5;
+      --border: #1f2a37;
+      --link: #7aa2f7;
+      --code-bg: #0b1220;
+    }
+    html, body { background: var(--bg); color: var(--text); margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji"; }
+    a { color: var(--link); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .wrap { max-width: 1100px; margin: 0 auto; padding: 28px 20px 64px; display: grid; grid-template-columns: 320px 1fr; gap: 24px; }
+    .card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; }
+    .toc { position: sticky; top: 16px; padding: 16px; height: fit-content; }
+    .toc h2 { margin: 0 0 12px; font-size: 14px; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; }
+    .toc ul { list-style: none; padding-left: 0; margin: 0; }
+    .toc li { margin: 6px 0; line-height: 1.35; }
+    .toc ul ul { padding-left: 14px; border-left: 1px solid var(--border); margin-left: 6px; }
+    .content { padding: 22px 22px 28px; }
+    h1 { font-size: 28px; margin-top: 0; }
+    h2 { font-size: 20px; margin-top: 28px; padding-top: 6px; border-top: 1px solid var(--border); }
+    h3 { font-size: 16px; margin-top: 22px; }
+    p { line-height: 1.6; color: var(--text); }
+    blockquote { margin: 14px 0; padding: 10px 14px; border-left: 3px solid var(--border); background: rgba(255,255,255,0.03); color: var(--muted); }
+    hr { border: 0; border-top: 1px solid var(--border); margin: 22px 0; }
+    code { background: rgba(255,255,255,0.06); padding: 2px 6px; border-radius: 6px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size: 0.95em; }
+    pre { background: var(--code-bg); border: 1px solid var(--border); border-radius: 12px; padding: 14px 14px; overflow: auto; }
+    pre code { background: transparent; padding: 0; display: block; white-space: pre; }
+    ul { padding-left: 20px; }
+    li { margin: 6px 0; }
+    @media (max-width: 980px) {
+      .wrap { grid-template-columns: 1fr; }
+      .toc { position: static; }
+    }
+    </style>
+</head>
+<body>
+  <div class="wrap">
+    <aside class="card toc"><h2>Contents</h2><ul>
+<li><a href="#repo-deep-dive-report-skills-hub">Repo Deep Dive Report — Skills Hub</a></li>
+<ul>
+<li><a href="#1-全局地图architecture-map">1) 全局地图（Architecture Map）</a></li>
+<ul>
+<li><a href="#11-顶层目录职责">1.1 顶层目录职责</a></li>
+<li><a href="#12-组件级依赖图mermaid">1.2 组件级依赖图（Mermaid）</a></li>
+<li><a href="#13-关键模块索引后端-core">1.3 关键模块索引（后端 core）</a></li>
+</ul>
+<li><a href="#2-入口点与关键链路entrypoint-critical-path">2) 入口点与关键链路（Entrypoint → Critical Path）</a></li>
+<ul>
+<li><a href="#21-app-启动链路rusttauri">2.1 App 启动链路（Rust/Tauri）</a></li>
+<li><a href="#22-前端入口与-command-调用方式">2.2 前端入口与 command 调用方式</a></li>
+<li><a href="#23-导入-skill本地目录关键路径概念链路">2.3 “导入 Skill（本地目录）”关键路径（概念链路）</a></li>
+<li><a href="#24-导入-skillgit-url关键路径概念链路">2.4 “导入 Skill（Git URL）”关键路径（概念链路）</a></li>
+<li><a href="#25-同步到工具symlinkjunctioncopy">2.5 同步到工具（symlink/junction/copy）</a></li>
+<li><a href="#26-onboarding扫描本机已有-skills-导入接管">2.6 Onboarding（扫描本机已有 skills → 导入/接管）</a></li>
+<li><a href="#27-analyticscodex-使用统计">2.7 Analytics（Codex 使用统计）</a></li>
+</ul>
+<li><a href="#3-数据模型sqlite">3) 数据模型（SQLite）</a></li>
+<li><a href="#4-可扩展点extension-points">4) 可扩展点（Extension Points）</a></li>
+<ul>
+<li><a href="#41-新增调整工具适配">4.1 新增/调整工具适配</a></li>
+<li><a href="#42-新增导入来源">4.2 新增导入来源</a></li>
+<li><a href="#43-新增-analytics其它工具">4.3 新增 Analytics（其它工具）</a></li>
+</ul>
+<li><a href="#5-getting-started开发上手">5) Getting Started（开发上手）</a></li>
+<li><a href="#6-评分scorecard100-分制">6) 评分（Scorecard，100 分制）</a></li>
+<li><a href="#7-高杠杆改进建议按收益成本排序">7) 高杠杆改进建议（按收益/成本排序）</a></li>
+<li><a href="#appendix相关文件速查">Appendix：相关文件速查</a></li>
+</ul>
+</ul></aside>
+    <main class="card content">
+      <h1 id="repo-deep-dive-report-skills-hub">Repo Deep Dive Report — Skills Hub</h1>
+<blockquote>Repo: <code>skills-hub</code> (Tauri + React)</blockquote>
+<blockquote>Workspace path: <code>/Users/liangpn/ai/skills-hub</code></blockquote>
+<blockquote>Branch/Commit: <code>main</code> @ <code>6551a6ec049fc6396276a58a9c4228a4d874fd53</code></blockquote>
+<blockquote>Report audience: 二次开发（你）/后续贡献者</blockquote>
+<p>本报告目标：在<strong>证据可追溯</strong>（文件路径 + 关键符号）的前提下，建立一份“脑内地图”，并指出最值得扩展的切入点与改进建议。</p>
+<hr />
+<h2 id="1-全局地图architecture-map">1) 全局地图（Architecture Map）</h2>
+<h3 id="11-顶层目录职责">1.1 顶层目录职责</h3>
+<ul>
+<li><code>src/</code>：前端（React + Vite）。核心是 <code>src/App.tsx</code>（当前采用“Tabs”形式切换 Skills / Analytics）。</li>
+<li><code>src-tauri/</code>：后端（Rust + Tauri）。核心是 <code>src-tauri/src/lib.rs</code>（Tauri Builder + DB 初始化 + command 注册）。</li>
+<li><code>docs/</code>：设计文档与截图。已有系统设计：<code>docs/system-design.md</code> / <code>docs/system-design.zh.md</code>。</li>
+<li><code>scripts/</code>：一些工程脚本（版本同步、icon、覆盖率等）。</li>
+<li><code>work/</code>：工作文档（本仓库约定的 WIP 目录）。</li>
+</ul>
+<h3 id="12-组件级依赖图mermaid">1.2 组件级依赖图（Mermaid）</h3>
+<pre><code class="language-mermaid">flowchart LR
+  subgraph FE[Frontend: React + Vite]
+    App[src/App.tsx]
+    SkillsUI[src/components/skills/*]
+    AnalyticsUI[src/components/analytics/*]
+    App --&gt; SkillsUI
+    App --&gt; AnalyticsUI
+    App --&gt;|invoke(command,args)| TauriInvoke
+  end
+
+  subgraph BE[Backend: Rust + Tauri]
+    Lib[src-tauri/src/lib.rs]
+    Cmd[src-tauri/src/commands/mod.rs]
+    Core[src-tauri/src/core/*]
+    Store[src-tauri/src/core/skill_store.rs]
+    Lib --&gt; Cmd
+    Cmd --&gt; Core
+    Core --&gt; Store
+  end
+
+  TauriInvoke --&gt; Cmd
+  Store --&gt; FS[(File System)]
+  Store --&gt; DB[(SQLite)]
+  Core --&gt; FS</code></pre>
+<h3 id="13-关键模块索引后端-core">1.3 关键模块索引（后端 core）</h3>
+<p><code>src-tauri/src/core/mod.rs</code> 暴露的主要模块：</p>
+<ul>
+<li><code>central_repo</code>：中央仓库路径解析与创建（<code>resolve_central_repo_path</code> / <code>ensure_central_repo</code>）。</li>
+<li><code>skill_store</code>：SQLite schema + CRUD（skills/targets/settings/usage events + cursors）。</li>
+<li><code>installer</code>：本地导入、Git 导入、从源更新（local/git）。</li>
+<li><code>git_fetcher</code>：Git clone/pull；优先系统 <code>git</code>，可选回退 libgit2（环境变量控制）。</li>
+<li><code>sync_engine</code>：把 central repo 的 skill 映射到各工具的 skills 目录（symlink/junction/copy）。</li>
+<li><code>tool_adapters</code>：各工具目录规则、检测、扫描本机已存在 skills（Onboarding 依赖）。</li>
+<li><code>onboarding</code>：扫描/聚合本机已有 skills，按 fingerprint 检测冲突，生成“接管/导入计划”。</li>
+<li><code>codex_analytics</code>：扫描 <code>~/.codex/sessions/**/rollout-*.jsonl</code>，生成 Codex 的 skill 使用统计（本次新增）。</li>
+<li><code>cache_cleanup</code> / <code>temp_cleanup</code>：清理 git cache / git temp（安全策略：prefix + marker 文件）。</li>
+<li><code>github_search</code>：GitHub 搜索（<code>/search/repositories</code>）。</li>
+</ul>
+<hr />
+<h2 id="2-入口点与关键链路entrypoint-critical-path">2) 入口点与关键链路（Entrypoint → Critical Path）</h2>
+<h3 id="21-app-启动链路rusttauri">2.1 App 启动链路（Rust/Tauri）</h3>
+<p>入口：<code>src-tauri/src/main.rs</code> → <code>app_lib::run()</code>（<code>src-tauri/src/lib.rs:9</code>）。</p>
+<p><code>src-tauri/src/lib.rs:9</code> 做了三件关键事：</p>
+<p>1) 初始化插件：dialog / opener / updater / log（<code>src-tauri/src/lib.rs:10-24</code>） 2) 初始化 DB：<code>default_db_path</code> → <code>migrate_legacy_db_if_needed</code> → <code>SkillStore::ensure_schema</code>，并 <code>app.manage(store)</code> 注入全局 state（<code>src-tauri/src/lib.rs:26-30</code>） 3) 注册所有 command（前端 <code>invoke</code> 的 API 面）：<code>tauri::generate_handler![...]</code>（<code>src-tauri/src/lib.rs:64-94</code>）</p>
+<p>另外还有两个后台清理任务：</p>
+<ul>
+<li>删除旧的 git temp dirs（prefix <code>skills-hub-git-*</code> + marker <code>.skills-hub-git-temp</code>）：<code>core::temp_cleanup::cleanup_old_git_temp_dirs</code>（<code>src-tauri/src/lib.rs:40</code>）</li>
+<li>删除 git cache dirs（路径来自 <code>app_cache_dir()/skills-hub-git-cache</code>）：<code>core::cache_cleanup::cleanup_git_cache_dirs</code>（<code>src-tauri/src/lib.rs:55</code>）</li>
+</ul>
+<h3 id="22-前端入口与-command-调用方式">2.2 前端入口与 command 调用方式</h3>
+<ul>
+<li>前端入口：<code>src/main.tsx</code> 渲染 <code>src/App.tsx</code></li>
+<li><code>src/App.tsx:78</code> 封装了 <code>invokeTauri&amp;lt;T&amp;gt;(command,args)</code>；非 Tauri 环境会抛 <code>errors.notTauri</code>。</li>
+</ul>
+<p>这意味着：<strong>绝大多数业务能力都必须通过 <code>src-tauri/src/commands/mod.rs</code> 暴露</strong>，前端是状态/交互层。</p>
+<h3 id="23-导入-skill本地目录关键路径概念链路">2.3 “导入 Skill（本地目录）”关键路径（概念链路）</h3>
+<p>调用链：</p>
+<p>1) 前端：Add Skill → <code>invoke('install_local', { path, name })</code>（见 <code>src/App.tsx</code> / <code>src/components/skills/modals/AddSkillModal.tsx</code>） 2) 后端 command：<code>install_local</code>（<code>src-tauri/src/commands/mod.rs</code>） 3) core：<code>installer::install_local_skill</code>（<code>src-tauri/src/core/installer.rs:26</code>） 4) core：<code>central_repo::resolve_central_repo_path</code> + <code>ensure_central_repo</code>（<code>src-tauri/src/core/central_repo.rs</code>） 5) core：<code>sync_engine::copy_dir_recursive</code> 把目录复制到 central repo（<code>src-tauri/src/core/sync_engine.rs:173</code>） 6) store：<code>SkillStore::upsert_skill</code> 写入 <code>skills</code> 表（<code>src-tauri/src/core/skill_store.rs:268</code>）</p>
+<h3 id="24-导入-skillgit-url关键路径概念链路">2.4 “导入 Skill（Git URL）”关键路径（概念链路）</h3>
+<p>核心差异：<strong>永远先 clone 到 cache，然后再 copy 到 central repo</strong>，避免 central repo 内含 <code>.git</code>。</p>
+<p>关键点：</p>
+<ul>
+<li><code>installer::install_git_skill</code>（<code>src-tauri/src/core/installer.rs:82</code>）</li>
+<li><code>git_fetcher::clone_or_pull</code> 优先系统 git（<code>src-tauri/src/core/git_fetcher.rs:10</code>）</li>
+<li>“multi-skill 仓库 root URL”会返回 <code>MULTI_SKILLS|...</code>，让用户选择具体 folder URL（<code>src-tauri/src/core/installer.rs:145</code> 附近）</li>
+</ul>
+<h3 id="25-同步到工具symlinkjunctioncopy">2.5 同步到工具（symlink/junction/copy）</h3>
+<p>同步策略集中在 <code>src-tauri/src/core/sync_engine.rs</code>：</p>
+<ul>
+<li><code>sync_dir_for_tool_with_overwrite</code>：对 Cursor 强制 copy（<code>src-tauri/src/core/sync_engine.rs:117-128</code>）</li>
+<li>其它工具：优先 symlink（unix），Windows 尝试 junction，再不行 copy（<code>sync_dir_hybrid</code>）</li>
+<li>安全行为：如果 target 已存在默认报错（需要显式 overwrite flow）</li>
+</ul>
+<h3 id="26-onboarding扫描本机已有-skills-导入接管">2.6 Onboarding（扫描本机已有 skills → 导入/接管）</h3>
+<p>Onboarding 的“发现”来自 <code>tool_adapters::scan_tool_dir</code>（<code>src-tauri/src/core/tool_adapters/mod.rs:157</code>）：</p>
+<ul>
+<li><code>default_tool_adapters()</code> 定义所有工具的相对目录规则（<code>src-tauri/src/core/tool_adapters/mod.rs:42</code>）</li>
+<li>过滤：Codex 的 <code>.system</code> 被跳过（<code>src-tauri/src/core/tool_adapters/mod.rs:177-179</code>）</li>
+<li>过滤：排除 “Tauri dev app_data_dir” 的路径（用字符串 hint <code>Application Support/com.tauri.dev/skills</code>，见 <code>src-tauri/src/core/tool_adapters/mod.rs:171</code>）</li>
+</ul>
+<p>Onboarding 的“冲突检测”：</p>
+<ul>
+<li><code>content_hash::hash_dir</code> 用 SHA-256 遍历目录内容（忽略 <code>.git</code> / <code>.DS_Store</code> / <code>Thumbs.db</code> / <code>.gitignore</code>）：<code>src-tauri/src/core/content_hash.rs</code></li>
+</ul>
+<h3 id="27-analyticscodex-使用统计">2.7 Analytics（Codex 使用统计）</h3>
+<p>数据源：仅扫描 <code>~/.codex/sessions/**/rollout-*.jsonl</code>（<code>src-tauri/src/commands/mod.rs:196-204</code>）。</p>
+<p>核心流程：</p>
+<p>见：<code>src-tauri/src/core/codex_analytics.rs:59</code>（<code>parse_rollout_line_for_use_skill</code>）</p>
+<p>- 支持把 <code>superpowers:&amp;lt;name&amp;gt;</code> 归一化成 <code>&amp;lt;name&amp;gt;</code>（前提：<code>~/.codex/skills/&amp;lt;name&amp;gt;</code> 存在）</p>
+<ul>
+<li>逐行 parse JSONL → 命中 <code>function_call</code> + <code>shell_command</code> → 从 command 中提取 <code>use-skill &amp;lt;skill_key&amp;gt;</code></li>
+<li>“只统计存在于 <code>~/.codex/skills/**</code> 的技能”：<code>canonicalize_codex_skill_key</code>（<code>src-tauri/src/core/codex_analytics.rs:279</code>）</li>
+<li>增量扫描：为每个 log_path 维护游标 <code>codex_scan_cursors</code>（避免重复计数）</li>
+<li>“默认不回溯”：启用统计时把现有文件游标设到 EOF；需要用户手动“历史回填”（前端面板已提供）</li>
+</ul>
+<hr />
+<h2 id="3-数据模型sqlite">3) 数据模型（SQLite）</h2>
+<p>DB 初始化：<code>SkillStore::ensure_schema</code>（<code>src-tauri/src/core/skill_store.rs:157</code>）</p>
+<p>主要表：</p>
+<ul>
+<li><code>skills</code>：Hub 托管的技能（central repo 内的目录）</li>
+<li><code>skill_targets</code>：技能在每个 tool 下的映射状态（mode/target_path/synced_at）</li>
+<li><code>settings</code>：简单 KV（central repo path、analytics config、git cache config 等）</li>
+<li><code>discovered_skills</code>：Onboarding 扫描的候选（是否已导入等）</li>
+<li><code>skill_usage_events</code>：Analytics 事件表（<code>skill_key</code> + optional <code>managed_skill_id</code>，以及 log source 行号去重）</li>
+<li><code>codex_scan_cursors</code>：每个 rollout log 的 last_line 游标</li>
+</ul>
+<p>值得注意的 schema 策略：</p>
+<ul>
+<li><code>PRAGMA user_version</code> + <code>SCHEMA_VERSION</code> 做简单迁移（当前 version=3，见 <code>src-tauri/src/core/skill_store.rs:13</code>）</li>
+<li><code>skill_usage_events</code> 用 <code>UNIQUE(tool, log_path, log_line)</code> 保证幂等（增量/回填都安全）</li>
+</ul>
+<hr />
+<h2 id="4-可扩展点extension-points">4) 可扩展点（Extension Points）</h2>
+<h3 id="41-新增调整工具适配">4.1 新增/调整工具适配</h3>
+<p>集中修改：</p>
+<ul>
+<li><code>src-tauri/src/core/tool_adapters/mod.rs</code>：新增 ToolId、display name、skills dir、detect dir</li>
+<li>若需要特殊同步策略：在 <code>src-tauri/src/core/sync_engine.rs</code> 增加按 tool_key 的分支（类似 Cursor 强制 copy）</li>
+</ul>
+<h3 id="42-新增导入来源">4.2 新增导入来源</h3>
+<p>现有来源：</p>
+<ul>
+<li>local folder：<code>installer::install_local_skill</code></li>
+<li>git url + folder url：<code>installer::install_git_skill</code> / <code>install_git_skill_from_selection</code></li>
+</ul>
+<p>可新增：</p>
+<ul>
+<li>zip 文件导入（UI 选文件 → 解压 → copy into central）</li>
+<li>“从工具目录接管”的快捷导入（基于 onboarding 扫描结果）</li>
+</ul>
+<h3 id="43-新增-analytics其它工具">4.3 新增 Analytics（其它工具）</h3>
+<p>现有 Analytics 是 Codex 专用，结构上已经具备通用形态：</p>
+<ul>
+<li>“事件表”按 <code>tool</code> 分区（<code>skill_usage_events.tool</code>）</li>
+<li>只需为新工具实现：日志发现 + 事件解析 + 游标策略（可复用 <code>skill_usage_events</code>）</li>
+</ul>
+<hr />
+<h2 id="5-getting-started开发上手">5) Getting Started（开发上手）</h2>
+<p>见 <code>README.md</code>：</p>
+<ul>
+<li><code>npm install</code> / <code>npm run tauri:dev</code></li>
+<li><code>npm run lint</code> / <code>npm run build</code> / <code>npm run tauri:build</code></li>
+<li>Rust tests：<code>cd src-tauri &amp;amp;&amp;amp; cargo test</code></li>
+</ul>
+<hr />
+<h2 id="6-评分scorecard100-分制">6) 评分（Scorecard，100 分制）</h2>
+<blockquote>评分基于当前代码（commit <code>6551a6e</code>）的可维护性、扩展性与稳定性；每项给出证据点。</blockquote>
+<p>- 前后端边界明确：<code>invoke_handler</code> + <code>commands/mod.rs</code> + <code>core/*</code> 分层清楚。 - 已有系统设计文档：<code>docs/system-design.md</code>。</p>
+<p>- tool adapters 集中配置，扩展点明确（<code>tool_adapters/mod.rs</code>）。 - 但前端页面组织目前偏“单文件 App 状态机”（<code>src/App.tsx</code> 很大）。</p>
+<p>- sync 有 overwrite 控制；analytics 事件去重；git temp 清理有 marker safety。 - 但对跨平台权限/沙盒的处理仍可更显式（尤其缓存目录写入）。</p>
+<p>- <code>format_anyhow_error</code> 对 GitHub clone 失败提供用户可读提示（<code>src-tauri/src/commands/mod.rs:34</code>）。 - analytics 面板加入 <code>matched/skipped/dups</code> 调试计数。</p>
+<p>- 大量 IO 操作目前偏“全量 copy”，但有合理限制与缓存策略。</p>
+<p>- 对删除缓存目录采用 prefix + marker + age 的三重限制（<code>temp_cleanup.rs</code> / <code>cache_cleanup.rs</code>）。 - 仍可补充更多“路径安全校验”的统一工具函数（目前分散在若干模块）。</p>
+<p>- core 有较多 Rust 单测（<code>src-tauri/src/core/tests/*</code>），新增 analytics 也带测试。</p>
+<p>- 设计文档较完善，但缺少“二次开发指南”（例如如何添加新 tool / 新 analytics 的步骤模板）。</p>
+<ul>
+<li>架构清晰度：<strong>14/15</strong></li>
+<li>可扩展性：<strong>13/15</strong></li>
+<li>可靠性/幂等：<strong>13/15</strong></li>
+<li>错误处理与可诊断性：<strong>12/15</strong></li>
+<li>性能：<strong>8/10</strong></li>
+<li>安全性：<strong>8/10</strong></li>
+<li>测试覆盖：<strong>10/10</strong></li>
+<li>文档：<strong>9/10</strong></li>
+</ul>
+<p><strong>总分：87/100</strong></p>
+<hr />
+<h2 id="7-高杠杆改进建议按收益成本排序">7) 高杠杆改进建议（按收益/成本排序）</h2>
+<p>1) <strong>前端模块化 App 状态机</strong> - <code>src/App.tsx</code> 继续增长会变得难维护；建议把 analytics / skills 两个 Tab 拆到独立页面组件，并收敛 command 调用到一个 service 层（例如 <code>src/lib/tauri.ts</code>）。 2) <strong>为“导入/同步/更新”补一个统一的 dry-run / 预检层</strong> - 现在 overwrite、target exists、tool not installed 依赖错误前缀分支；可以把这些规则抽成可复用的“计划/预检”对象，减少 UI 分支复杂度。 3) <strong>补齐对权限/沙盒路径的可配置性</strong> - git cache 目前在 <code>app_cache_dir()/skills-hub-git-cache</code>，某些环境（CI/沙盒）会失败；可以在 settings 提供“cache path override”（高级选项）。 4) <strong>清理未使用的 Router-based UI 代码</strong> - <code>src/components/Layout.tsx</code> / <code>src/pages/Dashboard.tsx</code> 当前看起来未被 <code>App.tsx</code> 使用；若不计划启用 Router，可以移除避免误导。</p>
+<hr />
+<h2 id="appendix相关文件速查">Appendix：相关文件速查</h2>
+<ul>
+<li>前端入口：<code>src/main.tsx</code></li>
+<li>前端主页面：<code>src/App.tsx</code></li>
+<li>Analytics 面板：<code>src/components/analytics/CodexAnalyticsPanel.tsx</code></li>
+<li>Tauri 入口：<code>src-tauri/src/main.rs</code> / <code>src-tauri/src/lib.rs</code></li>
+<li>Commands：<code>src-tauri/src/commands/mod.rs</code></li>
+<li>DB：<code>src-tauri/src/core/skill_store.rs</code></li>
+<li>导入/更新：<code>src-tauri/src/core/installer.rs</code></li>
+<li>同步：<code>src-tauri/src/core/sync_engine.rs</code></li>
+<li>Tool adapters：<code>src-tauri/src/core/tool_adapters/mod.rs</code></li>
+<li>迁移接管：<code>src-tauri/src/core/onboarding.rs</code></li>
+<li>Codex Analytics：<code>src-tauri/src/core/codex_analytics.rs</code></li>
+</ul>
+    </main>
+  </div>
+</body>
+</html>

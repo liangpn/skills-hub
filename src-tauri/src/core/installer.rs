@@ -178,13 +178,64 @@ struct ParsedGitSource {
     subpath: Option<String>,
 }
 
+fn strip_quotes(input: &str) -> &str {
+    input.trim().trim_matches('"').trim_matches('\'')
+}
+
+fn extract_repo_candidate(input: &str) -> String {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+    if tokens.is_empty() {
+        return String::new();
+    }
+
+    let mut candidate = tokens[0];
+    if tokens.len() > 1 {
+        if let Some(tok) = tokens.iter().copied().find(|t| {
+            let t = strip_quotes(t);
+            t.starts_with("https://")
+                || t.starts_with("http://")
+                || t.starts_with("ssh://")
+                || t.starts_with("git@")
+        }) {
+            candidate = tok;
+        } else if let Some(tok) = tokens
+            .iter()
+            .copied()
+            .find(|t| strip_quotes(t).contains("github.com/"))
+        {
+            candidate = tok;
+        } else if let Some(tok) = tokens
+            .iter()
+            .copied()
+            .find(|t| looks_like_github_shorthand(strip_quotes(t)))
+        {
+            candidate = tok;
+        }
+    }
+
+    strip_quotes(candidate).trim_end_matches('/').to_string()
+}
+
 fn parse_github_url(input: &str) -> ParsedGitSource {
     // Supports:
     // - https://github.com/owner/repo
     // - https://github.com/owner/repo.git
     // - https://github.com/owner/repo/tree/<branch>/<path>
     // - https://github.com/owner/repo/blob/<branch>/<path>
-    let trimmed = input.trim().trim_end_matches('/');
+    let candidate = extract_repo_candidate(input);
+    let trimmed = candidate.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return ParsedGitSource {
+            clone_url: String::new(),
+            branch: None,
+            subpath: None,
+        };
+    }
 
     // Convenience: allow GitHub shorthand inputs like `owner/repo` (and `owner/repo/tree/<branch>/...`).
     // This keeps the UI friendly while still allowing local paths or other git remotes.
@@ -649,21 +700,60 @@ struct RepoCacheMeta {
 
 static GIT_CACHE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
-fn clone_to_cache<R: tauri::Runtime>(
+pub fn clone_to_cache<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     store: &SkillStore,
     clone_url: &str,
     branch: Option<&str>,
 ) -> Result<(PathBuf, String)> {
     let started = std::time::Instant::now();
+    let cache_root = resolve_git_cache_root(app)?;
+    if let Err(err) = std::fs::create_dir_all(&cache_root).and_then(|_| ensure_writable_dir(&cache_root)) {
+        // In some sandboxed environments, the OS cache directory may not be writable.
+        // Fall back to a temp directory so git operations can still proceed.
+        let fallback = std::env::temp_dir().join("skills-hub-git-cache");
+        log::warn!(
+            "[installer] failed to create cache dir {:?}: {}. Falling back to {:?}",
+            cache_root,
+            err,
+            fallback
+        );
+        std::fs::create_dir_all(&fallback)
+            .with_context(|| format!("failed to create cache dir {:?}", fallback))?;
+        return clone_to_cache_with_root(store, clone_url, branch, &fallback, started);
+    }
+
+    clone_to_cache_with_root(store, clone_url, branch, &cache_root, started)
+}
+
+fn resolve_git_cache_root<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf> {
+    if let Ok(path) = std::env::var("SKILLS_HUB_GIT_CACHE_DIR") {
+        let p = PathBuf::from(path);
+        if p.is_absolute() {
+            return Ok(p);
+        }
+    }
     let cache_dir = app
         .path()
         .app_cache_dir()
         .context("failed to resolve app cache dir")?;
-    let cache_root = cache_dir.join("skills-hub-git-cache");
-    std::fs::create_dir_all(&cache_root)
-        .with_context(|| format!("failed to create cache dir {:?}", cache_root))?;
+    Ok(cache_dir.join("skills-hub-git-cache"))
+}
 
+fn ensure_writable_dir(dir: &Path) -> std::io::Result<()> {
+    let probe = dir.join(format!(".skills-hub-probe-{}", Uuid::new_v4()));
+    std::fs::create_dir(&probe)?;
+    std::fs::remove_dir(&probe)?;
+    Ok(())
+}
+
+fn clone_to_cache_with_root(
+    store: &SkillStore,
+    clone_url: &str,
+    branch: Option<&str>,
+    cache_root: &Path,
+    started: std::time::Instant,
+) -> Result<(PathBuf, String)> {
     let repo_dir = cache_root.join(repo_cache_key(clone_url, branch));
     let meta_path = repo_dir.join(".skills-hub-cache.json");
 

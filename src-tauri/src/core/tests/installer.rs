@@ -64,6 +64,11 @@ fn parses_github_urls() {
     assert!(p.branch.is_none());
     assert!(p.subpath.is_none());
 
+    let p = super::parse_github_url("https://github.com/owner/repo --skill slidev-monaco-editor");
+    assert_eq!(p.clone_url, "https://github.com/owner/repo.git");
+    assert!(p.branch.is_none());
+    assert!(p.subpath.is_none());
+
     let p = super::parse_github_url("anthropics/skills");
     assert_eq!(p.clone_url, "https://github.com/anthropics/skills.git");
     assert!(p.branch.is_none());

@@ -258,7 +258,7 @@ CREATE INDEX IF NOT EXISTS idx_skills_updated_at ON skills(updated_at);
     let user_version: i32 = conn
         .query_row("PRAGMA user_version;", [], |row| row.get(0))
         .expect("user_version");
-    assert_eq!(user_version, 3);
+    assert_eq!(user_version, 5);
 
     let tables: i64 = conn
         .query_row(
@@ -277,6 +277,34 @@ CREATE INDEX IF NOT EXISTS idx_skills_updated_at ON skills(updated_at);
         )
         .expect("tables2");
     assert_eq!(tables, 1);
+
+    let tables: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='llm_providers';",
+            [],
+            |row| row.get(0),
+        )
+        .expect("tables3");
+    assert_eq!(tables, 1);
+
+    let tables: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='llm_agents';",
+            [],
+            |row| row.get(0),
+        )
+        .expect("tables4");
+    assert_eq!(tables, 1);
+
+    // v5 adds stored provider API keys (api_key column).
+    let cols: Vec<String> = conn
+        .prepare("PRAGMA table_info(llm_providers);")
+        .expect("pragma stmt providers")
+        .query_map([], |row| row.get::<_, String>(1))
+        .expect("pragma rows providers")
+        .map(|r| r.expect("col"))
+        .collect();
+    assert!(cols.contains(&"api_key".to_string()));
 
     // v3 schema stores skill_key and managed_skill_id.
     let cols: Vec<String> = conn

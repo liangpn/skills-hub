@@ -16,19 +16,31 @@ use crate::core::codex_analytics::{
     list_codex_session_days as list_codex_session_days_core, set_codex_cursors_to_eof,
     CodexScanOptions, CodexScanStats, CodexSessionDay, ProjectMode,
 };
+use crate::core::codex_skills::{list_codex_installed_skills_in_dir, CodexInstalledSkill};
 use crate::core::github_search::{search_github_repos, RepoSummary};
 use crate::core::installer::{
-    install_git_skill, install_git_skill_from_selection, install_local_skill, list_git_skills,
-    update_managed_skill_from_source, GitSkillCandidate, InstallResult,
+    clone_to_cache, install_git_skill, install_git_skill_from_selection, install_local_skill,
+    list_git_skills, update_managed_skill_from_source, GitSkillCandidate, InstallResult,
 };
 use crate::core::onboarding::{build_onboarding_plan, OnboardingPlan};
+use crate::core::refinery::read_skill_snapshot;
+use crate::core::refinery_export::export_skill_to_root;
+use crate::core::llm_runner::run_llm;
+use crate::core::skill_audit::build_skill_audit_source_md;
 use crate::core::skill_store::{
-    SkillStore, SkillTargetRecord, SkillUsageLeaderboardRow, SkillUsageProjectRow,
+    LlmAgentRecord, LlmProviderRecord, SkillStore, SkillTargetRecord, SkillUsageLeaderboardRow,
+    SkillUsageProjectRow,
 };
 use crate::core::sync_engine::{
     copy_dir_recursive, sync_dir_for_tool_with_overwrite, sync_dir_hybrid, SyncMode,
 };
+use crate::core::text_files::read_text_file_utf8;
 use crate::core::tool_adapters::{adapter_by_key, is_tool_installed, resolve_default_path};
+use crate::core::work_rules::{
+    create_work_rule_in_root, export_work_rule_to_project, get_work_rule_in_root,
+    list_work_rules_in_root, update_work_rule_in_root, ExportMode, WorkRuleCreateParams,
+    WorkRuleEntry, WorkRuleManifest, WorkRuleUpdateParams,
+};
 use uuid::Uuid;
 
 fn format_anyhow_error(err: anyhow::Error) -> String {
@@ -112,6 +124,38 @@ pub struct ToolStatusDto {
     pub tools: Vec<ToolInfoDto>,
     pub installed: Vec<String>,
     pub newly_installed: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct LlmProviderDto {
+    pub id: String,
+    pub name: String,
+    pub provider_type: String,
+    pub base_url: Option<String>,
+    pub api_key_env: Option<String>,
+    pub api_key_configured: bool,
+    pub default_model: Option<String>,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
+fn llm_provider_to_dto(record: LlmProviderRecord) -> LlmProviderDto {
+    let api_key_configured = record
+        .api_key
+        .as_deref()
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
+    LlmProviderDto {
+        id: record.id,
+        name: record.name,
+        provider_type: record.provider_type,
+        base_url: record.base_url,
+        api_key_env: record.api_key_env,
+        api_key_configured,
+        default_model: record.default_model,
+        created_at_ms: record.created_at_ms,
+        updated_at_ms: record.updated_at_ms,
+    }
 }
 
 const ANALYTICS_CODEX_ENABLED_KEY: &str = "analytics_codex_enabled";
@@ -201,6 +245,483 @@ fn resolve_codex_sessions_dir() -> Result<std::path::PathBuf, anyhow::Error> {
 fn resolve_codex_skills_dir() -> Result<std::path::PathBuf, anyhow::Error> {
     let home = dirs::home_dir().context("failed to resolve home directory")?;
     Ok(home.join(".codex").join("skills"))
+}
+
+#[tauri::command]
+pub async fn list_codex_installed_skills() -> Result<Vec<CodexInstalledSkill>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let skills_dir = resolve_codex_skills_dir()?;
+        list_codex_installed_skills_in_dir(&skills_dir)
+    })
+    .await
+    .map_err(|err| err.to_string())?
+    .map_err(format_anyhow_error)
+}
+
+#[tauri::command]
+#[allow(non_snake_case)]
+pub async fn export_refinery_skill(
+    name: String,
+    skillMd: String,
+    overwrite: bool,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let skills_dir = resolve_codex_skills_dir()?;
+        let dest = export_skill_to_root(&skills_dir, &name, &skillMd, overwrite)?;
+        Ok::<_, anyhow::Error>(dest.to_string_lossy().to_string())
+    })
+    .await
+    .map_err(|err| err.to_string())?
+    .map_err(format_anyhow_error)
+}
+
+#[tauri::command]
+pub async fn list_llm_providers(store: State<'_, SkillStore>) -> Result<Vec<LlmProviderDto>, String> {
+    let store = store.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let list = store.list_llm_providers()?;
+        Ok::<_, anyhow::Error>(list.into_iter().map(llm_provider_to_dto).collect())
+    })
+        .await
+        .map_err(|err| err.to_string())?
+        .map_err(format_anyhow_error)
+}
+
+#[tauri::command]
+pub async fn get_llm_provider(store: State<'_, SkillStore>, id: String) -> Result<LlmProviderDto, String> {
+    let store = store.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(p) = store.get_llm_provider_by_id(&id)? else {
+            anyhow::bail!("provider not found: {}", id);
+        };
+        Ok::<_, anyhow::Error>(llm_provider_to_dto(p))
+    })
+    .await
+    .map_err(|err| err.to_string())?
+    .map_err(format_anyhow_error)
+}
+
+#[tauri::command]
+#[allow(non_snake_case)]
+pub async fn create_llm_provider(
+    store: State<'_, SkillStore>,
+    name: String,
+    providerType: String,
+    baseUrl: Option<String>,
+    apiKey: Option<String>,
+    apiKeyEnv: Option<String>,
+    defaultModel: Option<String>,
+) -> Result<LlmProviderDto, String> {
+    let store = store.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            anyhow::bail!("provider name is empty");
+        }
+        let provider_type = providerType.trim().to_lowercase();
+        if provider_type != "openai" && provider_type != "anthropic" && provider_type != "gemini" {
+            anyhow::bail!("invalid provider type: {}", providerType);
+        }
+        let now = now_ms();
+        let record = LlmProviderRecord {
+            id: Uuid::new_v4().to_string(),
+            name,
+            provider_type,
+            base_url: baseUrl.and_then(|s| {
+                let t = s.trim().to_string();
+                if t.is_empty() { None } else { Some(t) }
+            }),
+            api_key_env: apiKeyEnv.and_then(|s| {
+                let t = s.trim().to_string();
+                if t.is_empty() { None } else { Some(t) }
+            }),
+            api_key: apiKey.and_then(|s| {
+                let t = s.trim().to_string();
+                if t.is_empty() { None } else { Some(t) }
+            }),
+            default_model: defaultModel.and_then(|s| {
+                let t = s.trim().to_string();
+                if t.is_empty() { None } else { Some(t) }
+            }),
+            created_at_ms: now,
+            updated_at_ms: now,
+        };
+        store.upsert_llm_provider(&record)?;
+        Ok::<_, anyhow::Error>(llm_provider_to_dto(record))
+    })
+    .await
+    .map_err(|err| err.to_string())?
+    .map_err(format_anyhow_error)
+}
+
+#[tauri::command]
+#[allow(non_snake_case)]
+pub async fn update_llm_provider(
+    store: State<'_, SkillStore>,
+    id: String,
+    name: String,
+    providerType: String,
+    baseUrl: Option<String>,
+    apiKey: Option<String>,
+    apiKeyEnv: Option<String>,
+    defaultModel: Option<String>,
+) -> Result<(), String> {
+    let store = store.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(existing) = store.get_llm_provider_by_id(&id)? else {
+            anyhow::bail!("provider not found: {}", id);
+        };
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            anyhow::bail!("provider name is empty");
+        }
+        let provider_type = providerType.trim().to_lowercase();
+        if provider_type != "openai" && provider_type != "anthropic" && provider_type != "gemini" {
+            anyhow::bail!("invalid provider type: {}", providerType);
+        }
+        let now = now_ms();
+        let record = LlmProviderRecord {
+            id: existing.id,
+            name,
+            provider_type,
+            base_url: baseUrl.and_then(|s| {
+                let t = s.trim().to_string();
+                if t.is_empty() { None } else { Some(t) }
+            }),
+            api_key_env: apiKeyEnv.and_then(|s| {
+                let t = s.trim().to_string();
+                if t.is_empty() { None } else { Some(t) }
+            }),
+            api_key: match apiKey {
+                None => existing.api_key,
+                Some(s) => {
+                    let t = s.trim().to_string();
+                    if t.is_empty() { None } else { Some(t) }
+                }
+            },
+            default_model: defaultModel.and_then(|s| {
+                let t = s.trim().to_string();
+                if t.is_empty() { None } else { Some(t) }
+            }),
+            created_at_ms: existing.created_at_ms,
+            updated_at_ms: now,
+        };
+        store.upsert_llm_provider(&record)?;
+        Ok::<_, anyhow::Error>(())
+    })
+    .await
+    .map_err(|err| err.to_string())?
+    .map_err(format_anyhow_error)
+}
+
+#[tauri::command]
+pub async fn delete_llm_provider(store: State<'_, SkillStore>, id: String) -> Result<(), String> {
+    let store = store.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let in_use = store.count_llm_agents_for_provider(&id)?;
+        if in_use > 0 {
+            anyhow::bail!("provider is in use by {} agents", in_use);
+        }
+        store.delete_llm_provider(&id)?;
+        Ok::<_, anyhow::Error>(())
+    })
+    .await
+    .map_err(|err| err.to_string())?
+    .map_err(format_anyhow_error)
+}
+
+#[tauri::command]
+pub async fn list_llm_agents(store: State<'_, SkillStore>) -> Result<Vec<LlmAgentRecord>, String> {
+    let store = store.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || store.list_llm_agents())
+        .await
+        .map_err(|err| err.to_string())?
+        .map_err(format_anyhow_error)
+}
+
+#[tauri::command]
+pub async fn get_llm_agent(store: State<'_, SkillStore>, id: String) -> Result<LlmAgentRecord, String> {
+    let store = store.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(a) = store.get_llm_agent_by_id(&id)? else {
+            anyhow::bail!("agent not found: {}", id);
+        };
+        Ok::<_, anyhow::Error>(a)
+    })
+    .await
+    .map_err(|err| err.to_string())?
+    .map_err(format_anyhow_error)
+}
+
+#[tauri::command]
+#[allow(non_snake_case)]
+pub async fn create_llm_agent(
+    store: State<'_, SkillStore>,
+    name: String,
+    providerId: String,
+    model: Option<String>,
+    promptMd: String,
+) -> Result<LlmAgentRecord, String> {
+    let store = store.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            anyhow::bail!("agent name is empty");
+        }
+        if providerId.trim().is_empty() {
+            anyhow::bail!("providerId is empty");
+        }
+        if store.get_llm_provider_by_id(&providerId)?.is_none() {
+            anyhow::bail!("provider not found: {}", providerId);
+        }
+        let now = now_ms();
+        let record = LlmAgentRecord {
+            id: Uuid::new_v4().to_string(),
+            name,
+            provider_id: providerId,
+            model: model.and_then(|s| {
+                let t = s.trim().to_string();
+                if t.is_empty() { None } else { Some(t) }
+            }),
+            prompt_md: promptMd,
+            created_at_ms: now,
+            updated_at_ms: now,
+        };
+        store.upsert_llm_agent(&record)?;
+        Ok::<_, anyhow::Error>(record)
+    })
+    .await
+    .map_err(|err| err.to_string())?
+    .map_err(format_anyhow_error)
+}
+
+#[tauri::command]
+#[allow(non_snake_case)]
+pub async fn update_llm_agent(
+    store: State<'_, SkillStore>,
+    id: String,
+    name: String,
+    providerId: String,
+    model: Option<String>,
+    promptMd: String,
+) -> Result<(), String> {
+    let store = store.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(existing) = store.get_llm_agent_by_id(&id)? else {
+            anyhow::bail!("agent not found: {}", id);
+        };
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            anyhow::bail!("agent name is empty");
+        }
+        if providerId.trim().is_empty() {
+            anyhow::bail!("providerId is empty");
+        }
+        if store.get_llm_provider_by_id(&providerId)?.is_none() {
+            anyhow::bail!("provider not found: {}", providerId);
+        }
+        let now = now_ms();
+        let record = LlmAgentRecord {
+            id: existing.id,
+            name,
+            provider_id: providerId,
+            model: model.and_then(|s| {
+                let t = s.trim().to_string();
+                if t.is_empty() { None } else { Some(t) }
+            }),
+            prompt_md: promptMd,
+            created_at_ms: existing.created_at_ms,
+            updated_at_ms: now,
+        };
+        store.upsert_llm_agent(&record)?;
+        Ok::<_, anyhow::Error>(())
+    })
+    .await
+    .map_err(|err| err.to_string())?
+    .map_err(format_anyhow_error)
+}
+
+#[tauri::command]
+pub async fn delete_llm_agent(store: State<'_, SkillStore>, id: String) -> Result<(), String> {
+    let store = store.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        store.delete_llm_agent(&id)?;
+        Ok::<_, anyhow::Error>(())
+    })
+    .await
+    .map_err(|err| err.to_string())?
+    .map_err(format_anyhow_error)
+}
+
+#[tauri::command]
+#[allow(non_snake_case)]
+pub async fn run_llm_agent(
+    store: State<'_, SkillStore>,
+    agentId: String,
+    mode: String,
+    outputKind: String,
+    sourceMd: String,
+    analysisMd: Option<String>,
+) -> Result<String, String> {
+    let store = store.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(agent) = store.get_llm_agent_by_id(&agentId)? else {
+            anyhow::bail!("agent not found: {}", agentId);
+        };
+        let Some(provider) = store.get_llm_provider_by_id(&agent.provider_id)? else {
+            anyhow::bail!("provider not found: {}", agent.provider_id);
+        };
+
+        let model = agent
+            .model
+            .clone()
+            .or_else(|| provider.default_model.clone())
+            .ok_or_else(|| anyhow::anyhow!("model is required (set agent.model or provider.default_model)"))?;
+
+        let provider_type = provider.provider_type.trim().to_lowercase();
+        let base_url = provider
+            .base_url
+            .clone()
+            .unwrap_or_else(|| default_base_url_for_type(&provider_type).to_string());
+
+        let api_key = if let Some(key) = provider.api_key.as_deref() {
+            let t = key.trim();
+            if t.is_empty() {
+                None
+            } else {
+                Some(t.to_string())
+            }
+        } else {
+            provider
+                .api_key_env
+                .as_deref()
+                .map(|env| std::env::var(env).with_context(|| format!("missing env var: {}", env)))
+                .transpose()?
+        };
+
+        let user_prompt = build_llm_user_prompt(&mode, &outputKind, &sourceMd, analysisMd.as_deref())?;
+        let out = run_llm(
+            &provider_type,
+            &base_url,
+            api_key.as_deref(),
+            &model,
+            &agent.prompt_md,
+            &user_prompt,
+        )?;
+        Ok::<_, anyhow::Error>(out)
+    })
+    .await
+    .map_err(|err| err.to_string())?
+    .map_err(format_anyhow_error)
+}
+
+fn default_base_url_for_type(provider_type: &str) -> &'static str {
+    match provider_type {
+        "anthropic" => "https://api.anthropic.com",
+        "gemini" => "https://generativelanguage.googleapis.com",
+        _ => "https://api.openai.com/v1",
+    }
+}
+
+fn build_llm_user_prompt(
+    mode: &str,
+    output_kind: &str,
+    source_md: &str,
+    analysis_md: Option<&str>,
+) -> Result<String, anyhow::Error> {
+    let mode = mode.trim().to_lowercase();
+    let output_kind = output_kind.trim().to_lowercase();
+
+    let kind_label = match output_kind.as_str() {
+        "work_rule" => "工作准则文档（Markdown）",
+        "skill" => "Skill 的 SKILL.md（Markdown + YAML frontmatter）",
+        "skill_audit" => "Skill 审计报告（Markdown）",
+        other => anyhow::bail!("invalid outputKind: {}", other),
+    };
+
+    let instruction = match mode.as_str() {
+        "fusion" => format!(
+            "任务：将多个输入融合为一份新的 {kind_label}。\n\
+要求：\n\
+- 去重合并相似/重复的内容\n\
+- 保留关键约束、流程与注意事项\n\
+- 输出只包含最终的 Markdown 文本，不要额外解释\n\
+\n\
+输入：\n\
+```markdown\n\
+{}\n\
+```",
+            source_md.trim()
+        ),
+        "analysis" => format!(
+            "任务：对多个输入做对比分析，并给出合并建议。\n\
+输出：使用 Markdown，包含：\n\
+- 总览\n\
+- 重复/冲突点\n\
+- 推荐保留/删除/合并的条目\n\
+- 建议的最终大纲（可选）\n\
+\n\
+输入：\n\
+```markdown\n\
+{}\n\
+```",
+            source_md.trim()
+        ),
+        "optimize" => {
+            let analysis_md = analysis_md
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| anyhow::anyhow!("analysisMd is required for optimize mode"))?;
+            format!(
+                "任务：根据“分析/评审意见”优化输入内容，产出最终的 {kind_label}。\n\
+要求：\n\
+- 严格遵循分析/评审意见与用户补充要求\n\
+- 去重合并相似/重复的内容\n\
+- 保留关键约束、流程与注意事项\n\
+- 输出只包含最终的 Markdown 文本，不要额外解释\n\
+\n\
+分析/评审意见（可包含用户补充要求）：\n\
+```markdown\n\
+{}\n\
+```\n\
+\n\
+原始输入：\n\
+```markdown\n\
+{}\n\
+```",
+                analysis_md,
+                source_md.trim()
+            )
+        }
+        "audit" => format!(
+            "任务：对输入的 Skill/指令资产做“技能审计”，识别风险点并给出改进建议。\n\
+输出：使用 Markdown，包含：\n\
+- 总览：该 Skill 解决什么问题、主要工作流/使用方式\n\
+- 风险点：按类别列出（安全/隐私/提示注入/破坏性操作/供应链/权限/质量/可维护性/冗余/一致性）\n\
+  - 每条风险给出：严重级别（高/中/低）、证据（引用输入中的文件路径/片段）、影响、建议修复\n\
+- Quick wins：3-10 条可立即改进的建议\n\
+- 建议的大纲（可选）：如果要重写/精简该 Skill，建议的结构\n\
+\n\
+要求：\n\
+- 只基于输入，不要编造不存在的文件/内容\n\
+- 如果发现疑似密钥/Token/个人信息，标记并建议移除（不要原样完整输出）\n\
+- 输出只包含审计报告正文，不要额外解释\n\
+\n\
+输入：\n\
+```markdown\n\
+{}\n\
+```",
+            source_md.trim()
+        ),
+        other => anyhow::bail!("invalid mode: {}", other),
+    };
+
+    Ok(instruction)
+}
+
+fn resolve_work_rules_root_dir() -> Result<std::path::PathBuf, anyhow::Error> {
+    let home = dirs::home_dir().context("failed to resolve home directory")?;
+    Ok(home.join(".work-rules"))
 }
 
 fn get_codex_analytics_config_impl(store: &SkillStore) -> CodexAnalyticsConfigDto {
@@ -1068,6 +1589,407 @@ pub async fn delete_managed_skill(
         }
 
         Ok::<_, anyhow::Error>(())
+    })
+    .await
+    .map_err(|err| err.to_string())?
+    .map_err(format_anyhow_error)
+}
+
+#[tauri::command]
+pub async fn list_work_rules() -> Result<Vec<WorkRuleEntry>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = resolve_work_rules_root_dir()?;
+        std::fs::create_dir_all(&root).with_context(|| format!("create {:?}", root))?;
+        list_work_rules_in_root(&root)
+    })
+    .await
+    .map_err(|err| err.to_string())?
+    .map_err(format_anyhow_error)
+}
+
+#[derive(Debug, Serialize)]
+pub struct WorkRuleDetailsDto {
+    pub manifest: WorkRuleManifest,
+    pub content: String,
+}
+
+#[tauri::command]
+pub async fn get_work_rule(name: String) -> Result<WorkRuleDetailsDto, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = resolve_work_rules_root_dir()?;
+        std::fs::create_dir_all(&root).with_context(|| format!("create {:?}", root))?;
+        let (manifest, content) = get_work_rule_in_root(&root, &name, 1024 * 1024)?;
+        Ok::<_, anyhow::Error>(WorkRuleDetailsDto { manifest, content })
+    })
+    .await
+    .map_err(|err| err.to_string())?
+    .map_err(format_anyhow_error)
+}
+
+#[tauri::command]
+#[allow(non_snake_case)]
+pub async fn create_work_rule(
+    name: String,
+    entryFile: String,
+    content: String,
+    tags: Vec<String>,
+    score: Option<f64>,
+    description: Option<String>,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = resolve_work_rules_root_dir()?;
+        std::fs::create_dir_all(&root).with_context(|| format!("create {:?}", root))?;
+        create_work_rule_in_root(
+            &root,
+            WorkRuleCreateParams {
+                name,
+                entry_file: entryFile,
+                content,
+                tags,
+                score,
+                description,
+                now_ms: now_ms(),
+            },
+        )
+    })
+    .await
+    .map_err(|err| err.to_string())?
+    .map_err(format_anyhow_error)
+}
+
+#[tauri::command]
+#[allow(non_snake_case)]
+pub async fn update_work_rule(
+    name: String,
+    entryFile: String,
+    content: String,
+    tags: Vec<String>,
+    score: Option<f64>,
+    description: Option<String>,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = resolve_work_rules_root_dir()?;
+        std::fs::create_dir_all(&root).with_context(|| format!("create {:?}", root))?;
+        update_work_rule_in_root(
+            &root,
+            &name,
+            WorkRuleUpdateParams {
+                entry_file: entryFile,
+                content,
+                tags,
+                score,
+                description,
+                now_ms: now_ms(),
+            },
+        )
+    })
+    .await
+    .map_err(|err| err.to_string())?
+    .map_err(format_anyhow_error)
+}
+
+#[tauri::command]
+pub async fn delete_work_rule(name: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if name.trim().is_empty() || name.contains(['/', '\\']) {
+            anyhow::bail!("invalid work rule name");
+        }
+        let root = resolve_work_rules_root_dir()?;
+        let dir = root.join(&name);
+        if !dir.exists() {
+            return Ok(());
+        }
+        std::fs::remove_dir_all(&dir).with_context(|| format!("remove {:?}", dir))?;
+        Ok::<_, anyhow::Error>(())
+    })
+    .await
+    .map_err(|err| err.to_string())?
+    .map_err(format_anyhow_error)
+}
+
+#[tauri::command]
+#[allow(non_snake_case)]
+pub async fn export_work_rule(
+    name: String,
+    projectDir: String,
+    destFileName: String,
+    mode: String,
+    overwrite: bool,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if name.trim().is_empty() || name.contains(['/', '\\']) {
+            anyhow::bail!("invalid work rule name");
+        }
+        let mode = if mode.trim().eq_ignore_ascii_case("symlink") {
+            ExportMode::Symlink
+        } else {
+            ExportMode::Copy
+        };
+        let root = resolve_work_rules_root_dir()?;
+        let dest = export_work_rule_to_project(
+            &root,
+            std::path::Path::new(&name),
+            std::path::Path::new(&projectDir),
+            &destFileName,
+            mode,
+            overwrite,
+        )?;
+        Ok::<_, anyhow::Error>(dest.to_string_lossy().to_string())
+    })
+    .await
+    .map_err(|err| err.to_string())?
+    .map_err(format_anyhow_error)
+}
+
+#[tauri::command]
+#[allow(non_snake_case)]
+pub async fn read_text_file(path: String, maxBytes: Option<u64>) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let max = maxBytes.unwrap_or(512 * 1024).clamp(1, 2 * 1024 * 1024) as usize;
+        let p = std::path::Path::new(&path);
+        let text = read_text_file_utf8(p, max)?;
+        Ok::<_, anyhow::Error>(text)
+    })
+    .await
+    .map_err(|err| err.to_string())?
+    .map_err(format_anyhow_error)
+}
+
+#[tauri::command]
+#[allow(non_snake_case)]
+pub async fn write_text_file(path: String, content: String, overwrite: bool) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = path.trim().to_string();
+        if path.is_empty() {
+            anyhow::bail!("path is empty");
+        }
+        let p = std::path::Path::new(&path);
+        if p.exists() && !overwrite {
+            anyhow::bail!("file already exists: {}", path);
+        }
+        if let Some(parent) = p.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent).with_context(|| format!("create {:?}", parent))?;
+            }
+        }
+        std::fs::write(p, content).with_context(|| format!("write {:?}", p))?;
+        Ok::<_, anyhow::Error>(())
+    })
+    .await
+    .map_err(|err| err.to_string())?
+    .map_err(format_anyhow_error)
+}
+
+#[tauri::command]
+#[allow(non_snake_case)]
+pub async fn get_skill_snapshot(
+    store: State<'_, SkillStore>,
+    skillId: String,
+) -> Result<crate::core::refinery::SkillSnapshot, String> {
+    let store = store.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(skill) = store.get_skill_by_id(&skillId)? else {
+            anyhow::bail!("skill not found: {}", skillId);
+        };
+        let root = std::path::PathBuf::from(skill.central_path);
+        Ok::<_, anyhow::Error>(read_skill_snapshot(&root, 2000, 256 * 1024)?)
+    })
+    .await
+    .map_err(|err| err.to_string())?
+    .map_err(format_anyhow_error)
+}
+
+#[tauri::command]
+#[allow(non_snake_case)]
+pub async fn get_path_snapshot(path: String) -> Result<crate::core::refinery::SkillSnapshot, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if path.trim().is_empty() {
+            anyhow::bail!("path is empty");
+        }
+        let root = std::path::PathBuf::from(path);
+        Ok::<_, anyhow::Error>(read_skill_snapshot(&root, 2000, 256 * 1024)?)
+    })
+    .await
+    .map_err(|err| err.to_string())?
+    .map_err(format_anyhow_error)
+}
+
+#[tauri::command]
+#[allow(non_snake_case)]
+pub async fn get_git_snapshot(
+    app: tauri::AppHandle,
+    store: State<'_, SkillStore>,
+    repoUrl: String,
+) -> Result<crate::core::refinery::SkillSnapshot, String> {
+    let store = store.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let repo_url = normalize_repo_url(&repoUrl);
+        if repo_url.is_empty() {
+            anyhow::bail!("repoUrl is empty");
+        }
+        let (repo_dir, _head) = clone_to_cache(&app, &store, &repo_url, None)?;
+        Ok::<_, anyhow::Error>(read_skill_snapshot(&repo_dir, 2000, 256 * 1024)?)
+    })
+    .await
+    .map_err(|err| err.to_string())?
+    .map_err(format_anyhow_error)
+}
+
+fn is_owner_repo(token: &str) -> bool {
+    let mut parts = token.split('/');
+    let Some(owner) = parts.next() else {
+        return false;
+    };
+    let Some(repo) = parts.next() else {
+        return false;
+    };
+    if parts.next().is_some() {
+        return false;
+    }
+    let owner = owner.trim();
+    let repo = repo.trim();
+    if owner.is_empty() || repo.is_empty() {
+        return false;
+    }
+    let ok = |s: &str| {
+        s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-')
+    };
+    ok(owner) && ok(repo)
+}
+
+fn strip_quotes(s: &str) -> &str {
+    s.trim().trim_matches('"').trim_matches('\'')
+}
+
+fn normalize_repo_url(raw: &str) -> String {
+    let trimmed = strip_quotes(raw);
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+    let mut candidate: &str = trimmed;
+
+    if let Some(tok) = tokens.iter().find(|t| {
+        let t = strip_quotes(t);
+        t.starts_with("https://")
+            || t.starts_with("http://")
+            || t.starts_with("ssh://")
+            || t.starts_with("git@")
+    }) {
+        candidate = strip_quotes(tok);
+    } else if let Some(tok) = tokens.iter().find(|t| strip_quotes(t).contains("github.com/")) {
+        candidate = strip_quotes(tok);
+    } else if let Some(tok) = tokens.iter().find(|t| is_owner_repo(strip_quotes(t))) {
+        candidate = strip_quotes(tok);
+    } else if let Some(first) = tokens.first() {
+        candidate = strip_quotes(first);
+    }
+
+    let candidate = candidate.trim().trim_end_matches('/');
+    if candidate.is_empty() {
+        return String::new();
+    }
+
+    if is_owner_repo(candidate) {
+        return format!("https://github.com/{}", candidate);
+    }
+
+    if let Some(rest) = candidate.strip_prefix("github.com/") {
+        return format!("https://github.com/{}", normalize_github_path(rest));
+    }
+
+    if candidate.starts_with("git@github.com:") {
+        let rest = candidate.trim_start_matches("git@github.com:");
+        return format!("https://github.com/{}", normalize_github_path(rest));
+    }
+    if candidate.starts_with("git@github.com/") {
+        let rest = candidate.trim_start_matches("git@github.com/");
+        return format!("https://github.com/{}", normalize_github_path(rest));
+    }
+
+    if let Some(host_pos) = candidate.find("github.com/") {
+        let rest = &candidate[host_pos + "github.com/".len()..];
+        return format!("https://github.com/{}", normalize_github_path(rest));
+    }
+
+    candidate.to_string()
+}
+
+fn normalize_github_path(path: &str) -> String {
+    let parts: Vec<&str> = path
+        .trim()
+        .trim_start_matches('/')
+        .split('/')
+        .filter(|p| !p.is_empty())
+        .collect();
+    if parts.len() < 2 {
+        return path.trim().trim_start_matches('/').trim_end_matches('/').to_string();
+    }
+    let owner = parts[0].trim();
+    let repo = parts[1].trim().trim_end_matches(".git");
+    format!("{}/{}", owner, repo)
+}
+
+#[tauri::command]
+#[allow(non_snake_case)]
+pub async fn run_skill_audit(
+    store: State<'_, SkillStore>,
+    agentId: String,
+    root: String,
+) -> Result<String, String> {
+    let store = store.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = root.trim().to_string();
+        if root.is_empty() {
+            anyhow::bail!("root is empty");
+        }
+        let Some(agent) = store.get_llm_agent_by_id(&agentId)? else {
+            anyhow::bail!("agent not found: {}", agentId);
+        };
+        let Some(provider) = store.get_llm_provider_by_id(&agent.provider_id)? else {
+            anyhow::bail!("provider not found: {}", agent.provider_id);
+        };
+
+        let model = agent
+            .model
+            .clone()
+            .or_else(|| provider.default_model.clone())
+            .ok_or_else(|| anyhow::anyhow!("model is required (set agent.model or provider.default_model)"))?;
+
+        let provider_type = provider.provider_type.trim().to_lowercase();
+        let base_url = provider
+            .base_url
+            .clone()
+            .unwrap_or_else(|| default_base_url_for_type(&provider_type).to_string());
+
+        let api_key = if let Some(key) = provider.api_key.as_deref() {
+            let t = key.trim();
+            if t.is_empty() {
+                None
+            } else {
+                Some(t.to_string())
+            }
+        } else {
+            provider
+                .api_key_env
+                .as_deref()
+                .map(|env| std::env::var(env).with_context(|| format!("missing env var: {}", env)))
+                .transpose()?
+        };
+
+        let source_md = build_skill_audit_source_md(std::path::Path::new(&root))?;
+        let user_prompt = build_llm_user_prompt("audit", "skill_audit", &source_md, None)?;
+        let out = run_llm(
+            &provider_type,
+            &base_url,
+            api_key.as_deref(),
+            &model,
+            &agent.prompt_md,
+            &user_prompt,
+        )?;
+        Ok::<_, anyhow::Error>(out)
     })
     .await
     .map_err(|err| err.to_string())?

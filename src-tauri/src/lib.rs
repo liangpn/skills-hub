@@ -7,6 +7,11 @@ use tauri_plugin_log::{Target, TargetKind};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Load env vars from `.env` if present (best-effort).
+    // This supports local API key configuration (e.g. OPENAI_API_KEY) in dev.
+    // Source of truth: `~/.work-rules/.env`.
+    core::env_loader::load_dotenv_if_present();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
@@ -73,6 +78,19 @@ pub fn run() {
             commands::get_codex_analytics_config,
             commands::set_codex_analytics_config,
             commands::scan_codex_analytics_now,
+            commands::list_codex_installed_skills,
+            commands::export_refinery_skill,
+            commands::list_llm_providers,
+            commands::get_llm_provider,
+            commands::create_llm_provider,
+            commands::update_llm_provider,
+            commands::delete_llm_provider,
+            commands::list_llm_agents,
+            commands::get_llm_agent,
+            commands::create_llm_agent,
+            commands::update_llm_agent,
+            commands::delete_llm_agent,
+            commands::run_llm_agent,
             commands::list_codex_session_days,
             commands::backfill_codex_analytics,
             commands::clear_codex_analytics,
@@ -90,7 +108,19 @@ pub fn run() {
             commands::search_github,
             commands::import_existing_skill,
             commands::get_managed_skills,
-            commands::delete_managed_skill
+            commands::delete_managed_skill,
+            commands::list_work_rules,
+            commands::get_work_rule,
+            commands::create_work_rule,
+            commands::update_work_rule,
+            commands::delete_work_rule,
+            commands::export_work_rule,
+            commands::read_text_file,
+            commands::write_text_file,
+            commands::get_skill_snapshot,
+            commands::get_path_snapshot,
+            commands::get_git_snapshot,
+            commands::run_skill_audit
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
