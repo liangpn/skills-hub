@@ -1,4 +1,14 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  createContext,
+  createElement,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react'
 import type { TFunction } from 'i18next'
 import { toast } from 'sonner'
 import ReactMarkdown from 'react-markdown'
@@ -25,6 +35,9 @@ import {
   type DiffHunkState,
 } from '../../lib/lineDiff'
 import MonacoDiffEditor from '../monaco/MonacoDiffEditor'
+
+type MarkdownLineWrapMode = 'default' | 'in_list_item'
+const MarkdownLineWrapModeContext = createContext<MarkdownLineWrapMode>('default')
 
 type MonacoStandaloneEditor = {
   revealLineInCenter: (lineNumber: number) => void
@@ -275,6 +288,7 @@ export default function RefineryPanel({
   const [exportCommentDraft, setExportCommentDraft] = useState('')
   const [exportEditingCommentId, setExportEditingCommentId] = useState<string | null>(null)
   const [exportCommentCardTop, setExportCommentCardTop] = useState(12)
+  const [exportSourceCollapsed, setExportSourceCollapsed] = useState(false)
 
   const [showExportSkill, setShowExportSkill] = useState(false)
   const [exportSkillName, setExportSkillName] = useState('')
@@ -306,6 +320,7 @@ export default function RefineryPanel({
   const [exportSkillCommentDraft, setExportSkillCommentDraft] = useState('')
   const [exportSkillEditingCommentId, setExportSkillEditingCommentId] = useState<string | null>(null)
   const [exportSkillCommentCardTop, setExportSkillCommentCardTop] = useState(12)
+  const [exportSkillSourceCollapsed, setExportSkillSourceCollapsed] = useState(false)
 
   const exportPendingDiffs = useMemo(
     () => exportDiffHunks.filter((h) => h.decision === 'pending').length,
@@ -1007,6 +1022,7 @@ export default function RefineryPanel({
     setExportCommentDraft('')
     setExportEditingCommentId(null)
     setExportCommentCardTop(12)
+    setExportSourceCollapsed(false)
     exportLineAnchorsRef.current.clear()
   }, [])
 
@@ -1023,6 +1039,7 @@ export default function RefineryPanel({
     setExportSkillCommentDraft('')
     setExportSkillEditingCommentId(null)
     setExportSkillCommentCardTop(12)
+    setExportSkillSourceCollapsed(false)
     exportSkillLineAnchorsRef.current.clear()
   }, [])
 
@@ -1397,7 +1414,7 @@ export default function RefineryPanel({
 
   const startEditWorkRuleLineComment = useCallback(
     (comment: ReviewLineComment) => {
-      openWorkRuleLineComment(comment.line, true)
+      openWorkRuleLineComment(comment.line, false)
       setExportCommentDraft(comment.body)
       setExportEditingCommentId(comment.id)
     },
@@ -1690,7 +1707,7 @@ export default function RefineryPanel({
 
   const startEditSkillLineComment = useCallback(
     (comment: ReviewLineComment) => {
-      openSkillLineComment(comment.line, true)
+      openSkillLineComment(comment.line, false)
       setExportSkillCommentDraft(comment.body)
       setExportSkillEditingCommentId(comment.id)
     },
@@ -1743,12 +1760,19 @@ export default function RefineryPanel({
       ((node as { position?: { start?: { line?: number } } } | null)?.position?.start?.line ??
         null)
 
-    const wrap =
-      (tag: string) =>
-      ({ node, children, ...props }: { node?: unknown; children?: unknown } & Record<string, unknown>) => {
+    const wrap = (tag: string) => {
+      function MarkdownLineWrapped({
+        node,
+        children,
+        ...props
+      }: { node?: unknown; children?: unknown } & Record<string, unknown>) {
+        const mode = useContext(MarkdownLineWrapModeContext)
+        if (mode === 'in_list_item') {
+          return createElement(tag, props, children as ReactNode)
+        }
+
         const line = getLine(node)
         const count = line ? (exportLineCommentCounts.get(line) ?? 0) : 0
-        const Tag = tag as unknown as (props: Record<string, unknown>) => any
         return (
           <div
             className="md-line"
@@ -1775,25 +1799,32 @@ export default function RefineryPanel({
               )}
               {line && count > 0 ? <span className="md-line-count">{count}</span> : null}
             </div>
-            <div className="md-line-content">
-              <Tag {...props}>{children as any}</Tag>
-            </div>
+            <div className="md-line-content">{createElement(tag, props, children as ReactNode)}</div>
           </div>
         )
       }
 
-    const wrapVoid =
-      (tag: string) =>
-      ({ node, ...props }: { node?: unknown } & Record<string, unknown>) => {
-        const line = getLine(node)
-        const count = line ? (exportLineCommentCounts.get(line) ?? 0) : 0
-        const Tag = tag as unknown as (props: Record<string, unknown>) => any
-        return (
-          <div
-            className="md-line"
-            data-line={line ?? undefined}
-            ref={(el) => registerExportLineAnchor(line, el)}
-          >
+      return MarkdownLineWrapped
+    }
+
+    const wrapListItem = ({
+      node,
+      children,
+      ...props
+    }: { node?: unknown; children?: unknown } & Record<string, unknown>) => {
+      const line = getLine(node)
+      const count = line ? (exportLineCommentCounts.get(line) ?? 0) : 0
+      const className = (props as { className?: string }).className
+      const rest = { ...props }
+      delete (rest as { className?: string }).className
+      return (
+        <li
+          {...rest}
+          className={['md-line-li', className].filter(Boolean).join(' ')}
+          data-line={line ?? undefined}
+          ref={(el) => registerExportLineAnchor(line, el as unknown as HTMLElement | null)}
+        >
+          <div className="md-line md-line-li-inner">
             <div className="md-line-gutter">
               {line ? (
                 <button
@@ -1815,11 +1846,14 @@ export default function RefineryPanel({
               {line && count > 0 ? <span className="md-line-count">{count}</span> : null}
             </div>
             <div className="md-line-content">
-              <Tag {...props} />
+              <MarkdownLineWrapModeContext.Provider value="in_list_item">
+                {children as ReactNode}
+              </MarkdownLineWrapModeContext.Provider>
             </div>
           </div>
-        )
-      }
+        </li>
+      )
+    }
 
     return {
       p: wrap('p'),
@@ -1830,12 +1864,7 @@ export default function RefineryPanel({
       h5: wrap('h5'),
       h6: wrap('h6'),
       pre: wrap('pre'),
-      blockquote: wrap('blockquote'),
-      table: wrap('table'),
-      ul: wrap('ul'),
-      ol: wrap('ol'),
-      li: wrap('li'),
-      hr: wrapVoid('hr'),
+      li: wrapListItem,
     } as Record<string, unknown>
   }, [
     exportLineCommentCounts,
@@ -1849,12 +1878,19 @@ export default function RefineryPanel({
       ((node as { position?: { start?: { line?: number } } } | null)?.position?.start?.line ??
         null)
 
-    const wrap =
-      (tag: string) =>
-      ({ node, children, ...props }: { node?: unknown; children?: unknown } & Record<string, unknown>) => {
+    const wrap = (tag: string) => {
+      function MarkdownLineWrapped({
+        node,
+        children,
+        ...props
+      }: { node?: unknown; children?: unknown } & Record<string, unknown>) {
+        const mode = useContext(MarkdownLineWrapModeContext)
+        if (mode === 'in_list_item') {
+          return createElement(tag, props, children as ReactNode)
+        }
+
         const line = getLine(node)
         const count = line ? (exportSkillLineCommentCounts.get(line) ?? 0) : 0
-        const Tag = tag as unknown as (props: Record<string, unknown>) => any
         return (
           <div
             className="md-line"
@@ -1881,25 +1917,32 @@ export default function RefineryPanel({
               )}
               {line && count > 0 ? <span className="md-line-count">{count}</span> : null}
             </div>
-            <div className="md-line-content">
-              <Tag {...props}>{children as any}</Tag>
-            </div>
+            <div className="md-line-content">{createElement(tag, props, children as ReactNode)}</div>
           </div>
         )
       }
 
-    const wrapVoid =
-      (tag: string) =>
-      ({ node, ...props }: { node?: unknown } & Record<string, unknown>) => {
-        const line = getLine(node)
-        const count = line ? (exportSkillLineCommentCounts.get(line) ?? 0) : 0
-        const Tag = tag as unknown as (props: Record<string, unknown>) => any
-        return (
-          <div
-            className="md-line"
-            data-line={line ?? undefined}
-            ref={(el) => registerExportSkillLineAnchor(line, el)}
-          >
+      return MarkdownLineWrapped
+    }
+
+    const wrapListItem = ({
+      node,
+      children,
+      ...props
+    }: { node?: unknown; children?: unknown } & Record<string, unknown>) => {
+      const line = getLine(node)
+      const count = line ? (exportSkillLineCommentCounts.get(line) ?? 0) : 0
+      const className = (props as { className?: string }).className
+      const rest = { ...props }
+      delete (rest as { className?: string }).className
+      return (
+        <li
+          {...rest}
+          className={['md-line-li', className].filter(Boolean).join(' ')}
+          data-line={line ?? undefined}
+          ref={(el) => registerExportSkillLineAnchor(line, el as unknown as HTMLElement | null)}
+        >
+          <div className="md-line md-line-li-inner">
             <div className="md-line-gutter">
               {line ? (
                 <button
@@ -1921,11 +1964,14 @@ export default function RefineryPanel({
               {line && count > 0 ? <span className="md-line-count">{count}</span> : null}
             </div>
             <div className="md-line-content">
-              <Tag {...props} />
+              <MarkdownLineWrapModeContext.Provider value="in_list_item">
+                {children as ReactNode}
+              </MarkdownLineWrapModeContext.Provider>
             </div>
           </div>
-        )
-      }
+        </li>
+      )
+    }
 
     return {
       p: wrap('p'),
@@ -1936,12 +1982,7 @@ export default function RefineryPanel({
       h5: wrap('h5'),
       h6: wrap('h6'),
       pre: wrap('pre'),
-      blockquote: wrap('blockquote'),
-      table: wrap('table'),
-      ul: wrap('ul'),
-      ol: wrap('ol'),
-      li: wrap('li'),
-      hr: wrapVoid('hr'),
+      li: wrapListItem,
     } as Record<string, unknown>
   }, [
     exportSkillLineCommentCounts,
@@ -2725,7 +2766,7 @@ export default function RefineryPanel({
 
       {showExportWorkRule ? (
         <div className="modal-backdrop" onClick={() => (exportLoading ? null : closeExportWorkRule())}>
-          <div className="modal modal-3xl" onClick={(e) => e.stopPropagation()}>
+          <div className="modal modal-4xl" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
               <div className="modal-title">{t('refinery.exportWorkRule')}</div>
               <button
@@ -2761,21 +2802,23 @@ export default function RefineryPanel({
 	              {exportMode === 'analysis' ? (
 	                <>
 	                  <div className="refinery-analysis-toolbar">
-	                    <div className="form-group" style={{ marginBottom: 0, maxWidth: 360 }}>
-	                      <label className="label">{t('refinery.agent')}</label>
-	                      <select
-	                        className="input"
-	                        value={exportAgentId}
-	                        onChange={(e) => setExportAgentId(e.target.value)}
-	                        disabled={exportLoading || llmAgentsLoading}
-	                      >
-	                        <option value="">{t('refinery.pickAgent')}</option>
-	                        {llmAgents.map((a) => (
-	                          <option key={a.id} value={a.id}>
-	                            {a.name}
-	                          </option>
-	                        ))}
-	                      </select>
+	                    <div className="refinery-analysis-agent">
+	                      <div className="refinery-analysis-agent-row">
+	                        <div className="label">{t('refinery.agent')}</div>
+	                        <select
+	                          className="input input-sm"
+	                          value={exportAgentId}
+	                          onChange={(e) => setExportAgentId(e.target.value)}
+	                          disabled={exportLoading || llmAgentsLoading}
+	                        >
+	                          <option value="">{t('refinery.pickAgent')}</option>
+	                          {llmAgents.map((a) => (
+	                            <option key={a.id} value={a.id}>
+	                              {a.name}
+	                            </option>
+	                          ))}
+	                        </select>
+	                      </div>
 	                      {llmAgentsLoading ? (
 	                        <div className="helper-text">{t('analytics.loading')}</div>
 	                      ) : llmAgentsError ? (
@@ -2783,6 +2826,24 @@ export default function RefineryPanel({
 	                      ) : llmAgents.length === 0 ? (
 	                        <div className="helper-text">{t('refinery.noAgents')}</div>
 	                      ) : null}
+	                    </div>
+	                    <div className="refinery-analysis-toolbar-actions">
+	                      <button
+	                        className="btn btn-secondary btn-sm"
+	                        type="button"
+	                        onClick={() => void runWorkRuleLlm()}
+	                        disabled={exportLoading}
+	                      >
+	                        {t('refinery.runAnalysis')}
+	                      </button>
+	                      <button
+	                        className="btn btn-secondary btn-sm"
+	                        type="button"
+	                        onClick={closeExportWorkRule}
+	                        disabled={exportLoading}
+	                      >
+	                        {t('cancel')}
+	                      </button>
 	                    </div>
 	                  </div>
 
@@ -2808,7 +2869,7 @@ export default function RefineryPanel({
 	                            original={exportContent}
 	                            modified={exportOptimizedCandidate}
 	                            language="markdown"
-	                            height="min(60vh, 520px)"
+	                            height="min(70vh, 680px)"
 	                            className="monaco-diff-root"
 	                            onMount={(editor, monaco) => {
 	                              cleanupWorkRuleDiffMouse()
@@ -2885,19 +2946,23 @@ export default function RefineryPanel({
 	                      </div>
 	                    </div>
 	                  ) : (
-	                    <div className="refinery-diff-grid">
-	                      <div className="refinery-diff-pane">
-	                        <div className="refinery-diff-title">{t('refinery.diffSource')}</div>
-	                        {exportLoading ? (
-	                          <div className="analytics-empty">{t('analytics.loading')}</div>
-	                        ) : (
-	                          <div className="markdown-preview">
-	                            <ReactMarkdown remarkPlugins={[remarkGfm]}>
-	                              {exportContent.trim() ? exportContent : t('workRules.previewEmpty')}
-	                            </ReactMarkdown>
-	                          </div>
-	                        )}
-	                      </div>
+	                    <div
+	                      className={`refinery-diff-grid refinery-diff-grid--analysis${exportSourceCollapsed ? ' is-source-collapsed' : ''}`}
+	                    >
+	                      {exportSourceCollapsed ? null : (
+	                        <div className="refinery-diff-pane">
+	                          <div className="refinery-diff-title">{t('refinery.diffSource')}</div>
+	                          {exportLoading ? (
+	                            <div className="analytics-empty">{t('analytics.loading')}</div>
+	                          ) : (
+	                            <div className="markdown-preview markdown-preview-fill">
+	                              <ReactMarkdown remarkPlugins={[remarkGfm]}>
+	                                {exportContent.trim() ? exportContent : t('workRules.previewEmpty')}
+	                              </ReactMarkdown>
+	                            </div>
+	                          )}
+	                        </div>
+	                      )}
 	                      <div className="refinery-diff-pane">
 	                        <div className="refinery-diff-title-row">
 	                          <div className="refinery-diff-title">
@@ -2905,21 +2970,44 @@ export default function RefineryPanel({
 	                              ? t('refinery.diffOptimized')
 	                              : t('refinery.diffAnalysis')}
 	                          </div>
-	                          {exportOptimized.trim() ? (
+	                          <div className="refinery-diff-title-row-actions">
 	                            <button
-	                              className="btn btn-secondary btn-sm"
+	                              className="btn btn-secondary btn-sm btn-icon"
 	                              type="button"
-	                              onClick={() => {
-	                                setExportOptimized('')
-	                                setExportDiffHunks([])
-	                              }}
+	                              onClick={() => setExportSourceCollapsed((v) => !v)}
 	                              disabled={exportLoading}
+	                              title={
+	                                exportSourceCollapsed
+	                                  ? t('refinery.showSource')
+	                                  : t('refinery.hideSource')
+	                              }
+	                              aria-label={
+	                                exportSourceCollapsed
+	                                  ? t('refinery.showSource')
+	                                  : t('refinery.hideSource')
+	                              }
 	                            >
-	                              {t('refinery.backToAnalysis')}
+	                              {exportSourceCollapsed ? (
+	                                <ChevronRight size={14} />
+	                              ) : (
+	                                <ChevronLeft size={14} />
+	                              )}
 	                            </button>
-	                          ) : (
-	                            <div className="refinery-review-actions">
-	                              <div className="refinery-review-popover-anchor">
+	                            {exportOptimized.trim() ? (
+	                              <button
+	                                className="btn btn-secondary btn-sm"
+	                                type="button"
+	                                onClick={() => {
+	                                  setExportOptimized('')
+	                                  setExportDiffHunks([])
+	                                }}
+	                                disabled={exportLoading}
+	                              >
+	                                {t('refinery.backToAnalysis')}
+	                              </button>
+	                            ) : (
+	                              <div className="refinery-review-actions">
+	                                <div className="refinery-review-popover-anchor">
 	                                <button
 	                                  ref={exportReviewButtonRef}
 	                                  className="btn btn-secondary btn-sm"
@@ -2992,13 +3080,14 @@ export default function RefineryPanel({
 	                              >
 	                                {t('refinery.proceed')} · {exportReviewCount}
 	                              </button>
-	                            </div>
-	                          )}
+	                              </div>
+	                            )}
+	                          </div>
 	                        </div>
 	                        {exportLoading ? (
 	                          <div className="analytics-empty">{t('analytics.loading')}</div>
 	                        ) : exportOptimized.trim() ? (
-	                          <div className="markdown-preview">
+	                          <div className="markdown-preview markdown-preview-fill">
 	                            <ReactMarkdown remarkPlugins={[remarkGfm]}>
 	                              {exportOptimizedFinal.trim()
 	                                ? exportOptimizedFinal
@@ -3007,7 +3096,7 @@ export default function RefineryPanel({
 	                          </div>
 	                        ) : (
 	                          <div className="refinery-analysis-editor-wrap" ref={exportAnalysisWrapRef}>
-	                            <div className="markdown-preview markdown-line-review">
+	                            <div className="markdown-preview markdown-line-review markdown-preview-fill">
 	                              <ReactMarkdown
 	                                remarkPlugins={[remarkGfm]}
 	                                components={exportAnalysisMarkdownComponents}
@@ -3041,17 +3130,52 @@ export default function RefineryPanel({
 	                                  <div className="refinery-line-comment-list">
 	                                    {exportActiveLineComments.map((c) => (
 	                                      <div key={c.id} className="refinery-line-comment-item">
-	                                        <div className="refinery-line-comment-text">{c.body}</div>
+	                                        <div className="refinery-line-comment-text">
+	                                          {exportEditingCommentId === c.id ? (
+	                                            <>
+	                                              <textarea
+	                                                className="input input-sm refinery-line-comment-textarea"
+	                                                rows={3}
+	                                                value={exportCommentDraft}
+	                                                onChange={(e) => setExportCommentDraft(e.target.value)}
+	                                                placeholder={t('refinery.commentPlaceholder')}
+	                                              />
+	                                              <div className="refinery-line-comment-actions">
+	                                                <button
+	                                                  className="btn btn-primary btn-sm"
+	                                                  type="button"
+	                                                  onClick={submitWorkRuleLineComment}
+	                                                >
+	                                                  {t('refinery.commentUpdate')}
+	                                                </button>
+	                                                <button
+	                                                  className="btn btn-secondary btn-sm"
+	                                                  type="button"
+	                                                  onClick={() => {
+	                                                    setExportCommentDraft('')
+	                                                    setExportEditingCommentId(null)
+	                                                  }}
+	                                                >
+	                                                  {t('cancel')}
+	                                                </button>
+	                                              </div>
+	                                            </>
+	                                          ) : (
+	                                            c.body
+	                                          )}
+	                                        </div>
 	                                        <div className="refinery-line-comment-item-actions">
-	                                          <button
-	                                            className="btn btn-secondary btn-sm btn-icon"
-	                                            type="button"
-	                                            onClick={() => startEditWorkRuleLineComment(c)}
-	                                            title={t('refinery.commentEdit')}
-	                                            aria-label={t('refinery.commentEdit')}
-	                                          >
-	                                            <Pencil size={14} />
-	                                          </button>
+	                                          {exportEditingCommentId === c.id ? null : (
+	                                            <button
+	                                              className="btn btn-secondary btn-sm btn-icon"
+	                                              type="button"
+	                                              onClick={() => startEditWorkRuleLineComment(c)}
+	                                              title={t('refinery.commentEdit')}
+	                                              aria-label={t('refinery.commentEdit')}
+	                                            >
+	                                              <Pencil size={14} />
+	                                            </button>
+	                                          )}
 	                                          <button
 	                                            className="btn btn-danger btn-sm btn-icon"
 	                                            type="button"
@@ -3067,24 +3191,10 @@ export default function RefineryPanel({
 	                                  </div>
 	                                )}
 
-	                                {!exportCommentComposerOpen ? (
-	                                  <button
-	                                    className="btn btn-secondary btn-sm"
-	                                    type="button"
-	                                    onClick={() => {
-	                                      setExportCommentComposerOpen(true)
-	                                      setExportCommentDraft('')
-	                                      setExportEditingCommentId(null)
-	                                    }}
-	                                  >
-	                                    {t('refinery.addLineComment')}
-	                                  </button>
-	                                ) : null}
-
-	                                {exportCommentComposerOpen ? (
+	                                {exportCommentComposerOpen && !exportEditingCommentId ? (
 	                                  <>
 	                                    <textarea
-	                                      className="input"
+	                                      className="input input-sm refinery-line-comment-textarea"
 	                                      rows={3}
 	                                      value={exportCommentDraft}
 	                                      onChange={(e) => setExportCommentDraft(e.target.value)}
@@ -3096,9 +3206,7 @@ export default function RefineryPanel({
 	                                        type="button"
 	                                        onClick={submitWorkRuleLineComment}
 	                                      >
-	                                        {exportEditingCommentId
-	                                          ? t('refinery.commentUpdate')
-	                                          : t('refinery.commentSave')}
+	                                        {t('refinery.commentSave')}
 	                                      </button>
 	                                      <button
 	                                        className="btn btn-secondary btn-sm"
@@ -3106,7 +3214,6 @@ export default function RefineryPanel({
 	                                        onClick={() => {
 	                                          setExportCommentComposerOpen(false)
 	                                          setExportCommentDraft('')
-	                                          setExportEditingCommentId(null)
 	                                        }}
 	                                      >
 	                                        {t('cancel')}
@@ -3250,44 +3357,47 @@ export default function RefineryPanel({
 	                  </div>
 	                </div>
 	              )}
-	              <div className="modal-footer">
-	                <button
-	                  className="btn btn-secondary"
-	                  type="button"
-	                  onClick={() => void runWorkRuleLlm()}
-	                  disabled={exportLoading}
-	                >
-	                  {exportMode === 'fusion' ? t('refinery.runFusion') : t('refinery.runAnalysis')}
-	                </button>
-	                {exportMode === 'analysis' && exportOptimizedFinal.trim() && exportPendingDiffs === 0 ? (
+	              {exportMode === 'analysis' ? (
+	                exportOptimizedFinal.trim() && exportPendingDiffs === 0 ? (
+	                  <div className="modal-footer">
+	                    <button
+	                      className="btn btn-primary"
+	                      type="button"
+	                      onClick={() => void saveWorkRuleOptimized()}
+	                      disabled={exportLoading}
+	                    >
+	                      {t('refinery.saveOptimized')}
+	                    </button>
+	                  </div>
+	                ) : null
+	              ) : (
+	                <div className="modal-footer">
+	                  <button
+	                    className="btn btn-secondary"
+	                    type="button"
+	                    onClick={() => void runWorkRuleLlm()}
+	                    disabled={exportLoading}
+	                  >
+	                    {t('refinery.runFusion')}
+	                  </button>
+	                  <button
+	                    className="btn btn-secondary"
+	                    type="button"
+	                    onClick={closeExportWorkRule}
+	                    disabled={exportLoading}
+	                  >
+	                    {t('cancel')}
+	                  </button>
 	                  <button
 	                    className="btn btn-primary"
 	                    type="button"
-	                    onClick={() => void saveWorkRuleOptimized()}
+	                    onClick={() => void onSubmitExportWorkRule()}
 	                    disabled={exportLoading}
 	                  >
-	                    {t('refinery.saveOptimized')}
+	                    {t('workRules.create')}
 	                  </button>
-	                ) : null}
-	                <button
-	                  className="btn btn-secondary"
-	                  type="button"
-	                  onClick={closeExportWorkRule}
-	                  disabled={exportLoading}
-	                >
-	                  {t('cancel')}
-	                </button>
-                {exportMode === 'fusion' ? (
-                  <button
-                    className="btn btn-primary"
-                    type="button"
-                    onClick={() => void onSubmitExportWorkRule()}
-                    disabled={exportLoading}
-                  >
-                    {t('workRules.create')}
-                  </button>
-                ) : null}
-              </div>
+	                </div>
+	              )}
             </div>
           </div>
         </div>
@@ -3295,7 +3405,7 @@ export default function RefineryPanel({
 
       {showExportSkill ? (
         <div className="modal-backdrop" onClick={() => (exportSkillLoading ? null : closeExportSkill())}>
-          <div className="modal modal-3xl" onClick={(e) => e.stopPropagation()}>
+          <div className="modal modal-4xl" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
               <div className="modal-title">{t('refinery.exportSkill')}</div>
               <button
@@ -3330,21 +3440,23 @@ export default function RefineryPanel({
 	              {exportSkillMode === 'analysis' ? (
 	                <>
 	                  <div className="refinery-analysis-toolbar">
-	                    <div className="form-group" style={{ marginBottom: 0, maxWidth: 360 }}>
-	                      <label className="label">{t('refinery.agent')}</label>
-	                      <select
-	                        className="input"
-	                        value={exportSkillAgentId}
-	                        onChange={(e) => setExportSkillAgentId(e.target.value)}
-	                        disabled={exportSkillLoading || llmAgentsLoading}
-	                      >
-	                        <option value="">{t('refinery.pickAgent')}</option>
-	                        {llmAgents.map((a) => (
-	                          <option key={a.id} value={a.id}>
-	                            {a.name}
-	                          </option>
-	                        ))}
-	                      </select>
+	                    <div className="refinery-analysis-agent">
+	                      <div className="refinery-analysis-agent-row">
+	                        <div className="label">{t('refinery.agent')}</div>
+	                        <select
+	                          className="input input-sm"
+	                          value={exportSkillAgentId}
+	                          onChange={(e) => setExportSkillAgentId(e.target.value)}
+	                          disabled={exportSkillLoading || llmAgentsLoading}
+	                        >
+	                          <option value="">{t('refinery.pickAgent')}</option>
+	                          {llmAgents.map((a) => (
+	                            <option key={a.id} value={a.id}>
+	                              {a.name}
+	                            </option>
+	                          ))}
+	                        </select>
+	                      </div>
 	                      {llmAgentsLoading ? (
 	                        <div className="helper-text">{t('analytics.loading')}</div>
 	                      ) : llmAgentsError ? (
@@ -3352,6 +3464,24 @@ export default function RefineryPanel({
 	                      ) : llmAgents.length === 0 ? (
 	                        <div className="helper-text">{t('refinery.noAgents')}</div>
 	                      ) : null}
+	                    </div>
+	                    <div className="refinery-analysis-toolbar-actions">
+	                      <button
+	                        className="btn btn-secondary btn-sm"
+	                        type="button"
+	                        onClick={() => void runSkillLlm()}
+	                        disabled={exportSkillLoading}
+	                      >
+	                        {t('refinery.runAnalysis')}
+	                      </button>
+	                      <button
+	                        className="btn btn-secondary btn-sm"
+	                        type="button"
+	                        onClick={closeExportSkill}
+	                        disabled={exportSkillLoading}
+	                      >
+	                        {t('cancel')}
+	                      </button>
 	                    </div>
 	                  </div>
 
@@ -3377,7 +3507,7 @@ export default function RefineryPanel({
 	                            original={exportSkillContent}
 	                            modified={exportSkillOptimizedCandidate}
 	                            language="markdown"
-	                            height="min(60vh, 520px)"
+	                            height="min(70vh, 680px)"
 	                            className="monaco-diff-root"
 	                            onMount={(editor, monaco) => {
 	                              cleanupSkillDiffMouse()
@@ -3454,21 +3584,25 @@ export default function RefineryPanel({
 	                      </div>
 	                    </div>
 	                  ) : (
-	                    <div className="refinery-diff-grid">
-	                      <div className="refinery-diff-pane">
-	                        <div className="refinery-diff-title">{t('refinery.diffSource')}</div>
-	                        {exportSkillLoading ? (
-	                          <div className="analytics-empty">{t('analytics.loading')}</div>
-	                        ) : (
-	                          <div className="markdown-preview">
-	                            <ReactMarkdown remarkPlugins={[remarkGfm]}>
-	                              {exportSkillContent.trim()
-	                                ? exportSkillContent
-	                                : t('workRules.previewEmpty')}
-	                            </ReactMarkdown>
-	                          </div>
-	                        )}
-	                      </div>
+	                    <div
+	                      className={`refinery-diff-grid refinery-diff-grid--analysis${exportSkillSourceCollapsed ? ' is-source-collapsed' : ''}`}
+	                    >
+	                      {exportSkillSourceCollapsed ? null : (
+	                        <div className="refinery-diff-pane">
+	                          <div className="refinery-diff-title">{t('refinery.diffSource')}</div>
+	                          {exportSkillLoading ? (
+	                            <div className="analytics-empty">{t('analytics.loading')}</div>
+	                          ) : (
+	                            <div className="markdown-preview markdown-preview-fill">
+	                              <ReactMarkdown remarkPlugins={[remarkGfm]}>
+	                                {exportSkillContent.trim()
+	                                  ? exportSkillContent
+	                                  : t('workRules.previewEmpty')}
+	                              </ReactMarkdown>
+	                            </div>
+	                          )}
+	                        </div>
+	                      )}
 	                      <div className="refinery-diff-pane">
 	                        <div className="refinery-diff-title-row">
 	                          <div className="refinery-diff-title">
@@ -3476,21 +3610,44 @@ export default function RefineryPanel({
 	                              ? t('refinery.diffOptimized')
 	                              : t('refinery.diffAnalysis')}
 	                          </div>
-	                          {exportSkillOptimized.trim() ? (
+	                          <div className="refinery-diff-title-row-actions">
 	                            <button
-	                              className="btn btn-secondary btn-sm"
+	                              className="btn btn-secondary btn-sm btn-icon"
 	                              type="button"
-	                              onClick={() => {
-	                                setExportSkillOptimized('')
-	                                setExportSkillDiffHunks([])
-	                              }}
+	                              onClick={() => setExportSkillSourceCollapsed((v) => !v)}
 	                              disabled={exportSkillLoading}
+	                              title={
+	                                exportSkillSourceCollapsed
+	                                  ? t('refinery.showSource')
+	                                  : t('refinery.hideSource')
+	                              }
+	                              aria-label={
+	                                exportSkillSourceCollapsed
+	                                  ? t('refinery.showSource')
+	                                  : t('refinery.hideSource')
+	                              }
 	                            >
-	                              {t('refinery.backToAnalysis')}
+	                              {exportSkillSourceCollapsed ? (
+	                                <ChevronRight size={14} />
+	                              ) : (
+	                                <ChevronLeft size={14} />
+	                              )}
 	                            </button>
-	                          ) : (
-	                            <div className="refinery-review-actions">
-	                              <div className="refinery-review-popover-anchor">
+	                            {exportSkillOptimized.trim() ? (
+	                              <button
+	                                className="btn btn-secondary btn-sm"
+	                                type="button"
+	                                onClick={() => {
+	                                  setExportSkillOptimized('')
+	                                  setExportSkillDiffHunks([])
+	                                }}
+	                                disabled={exportSkillLoading}
+	                              >
+	                                {t('refinery.backToAnalysis')}
+	                              </button>
+	                            ) : (
+	                              <div className="refinery-review-actions">
+	                                <div className="refinery-review-popover-anchor">
 	                                <button
 	                                  ref={exportSkillReviewButtonRef}
 	                                  className="btn btn-secondary btn-sm"
@@ -3563,13 +3720,14 @@ export default function RefineryPanel({
 	                              >
 	                                {t('refinery.proceed')} · {exportSkillReviewCount}
 	                              </button>
-	                            </div>
-	                          )}
+	                              </div>
+	                            )}
+	                          </div>
 	                        </div>
 	                        {exportSkillLoading ? (
 	                          <div className="analytics-empty">{t('analytics.loading')}</div>
 	                        ) : exportSkillOptimized.trim() ? (
-	                          <div className="markdown-preview">
+	                          <div className="markdown-preview markdown-preview-fill">
 	                            <ReactMarkdown remarkPlugins={[remarkGfm]}>
 	                              {exportSkillOptimizedFinal.trim()
 	                                ? exportSkillOptimizedFinal
@@ -3578,7 +3736,7 @@ export default function RefineryPanel({
 	                          </div>
 	                        ) : (
 	                          <div className="refinery-analysis-editor-wrap" ref={exportSkillAnalysisWrapRef}>
-	                            <div className="markdown-preview markdown-line-review">
+	                            <div className="markdown-preview markdown-line-review markdown-preview-fill">
 	                              <ReactMarkdown
 	                                remarkPlugins={[remarkGfm]}
 	                                components={exportSkillAnalysisMarkdownComponents}
@@ -3614,17 +3772,52 @@ export default function RefineryPanel({
 	                                  <div className="refinery-line-comment-list">
 	                                    {exportSkillActiveLineComments.map((c) => (
 	                                      <div key={c.id} className="refinery-line-comment-item">
-	                                        <div className="refinery-line-comment-text">{c.body}</div>
+	                                        <div className="refinery-line-comment-text">
+	                                          {exportSkillEditingCommentId === c.id ? (
+	                                            <>
+	                                              <textarea
+	                                                className="input input-sm refinery-line-comment-textarea"
+	                                                rows={3}
+	                                                value={exportSkillCommentDraft}
+	                                                onChange={(e) => setExportSkillCommentDraft(e.target.value)}
+	                                                placeholder={t('refinery.commentPlaceholder')}
+	                                              />
+	                                              <div className="refinery-line-comment-actions">
+	                                                <button
+	                                                  className="btn btn-primary btn-sm"
+	                                                  type="button"
+	                                                  onClick={submitSkillLineComment}
+	                                                >
+	                                                  {t('refinery.commentUpdate')}
+	                                                </button>
+	                                                <button
+	                                                  className="btn btn-secondary btn-sm"
+	                                                  type="button"
+	                                                  onClick={() => {
+	                                                    setExportSkillCommentDraft('')
+	                                                    setExportSkillEditingCommentId(null)
+	                                                  }}
+	                                                >
+	                                                  {t('cancel')}
+	                                                </button>
+	                                              </div>
+	                                            </>
+	                                          ) : (
+	                                            c.body
+	                                          )}
+	                                        </div>
 	                                        <div className="refinery-line-comment-item-actions">
-	                                          <button
-	                                            className="btn btn-secondary btn-sm btn-icon"
-	                                            type="button"
-	                                            onClick={() => startEditSkillLineComment(c)}
-	                                            title={t('refinery.commentEdit')}
-	                                            aria-label={t('refinery.commentEdit')}
-	                                          >
-	                                            <Pencil size={14} />
-	                                          </button>
+	                                          {exportSkillEditingCommentId === c.id ? null : (
+	                                            <button
+	                                              className="btn btn-secondary btn-sm btn-icon"
+	                                              type="button"
+	                                              onClick={() => startEditSkillLineComment(c)}
+	                                              title={t('refinery.commentEdit')}
+	                                              aria-label={t('refinery.commentEdit')}
+	                                            >
+	                                              <Pencil size={14} />
+	                                            </button>
+	                                          )}
 	                                          <button
 	                                            className="btn btn-danger btn-sm btn-icon"
 	                                            type="button"
@@ -3640,24 +3833,10 @@ export default function RefineryPanel({
 	                                  </div>
 	                                )}
 
-	                                {!exportSkillCommentComposerOpen ? (
-	                                  <button
-	                                    className="btn btn-secondary btn-sm"
-	                                    type="button"
-	                                    onClick={() => {
-	                                      setExportSkillCommentComposerOpen(true)
-	                                      setExportSkillCommentDraft('')
-	                                      setExportSkillEditingCommentId(null)
-	                                    }}
-	                                  >
-	                                    {t('refinery.addLineComment')}
-	                                  </button>
-	                                ) : null}
-
-	                                {exportSkillCommentComposerOpen ? (
+	                                {exportSkillCommentComposerOpen && !exportSkillEditingCommentId ? (
 	                                  <>
 	                                    <textarea
-	                                      className="input"
+	                                      className="input input-sm refinery-line-comment-textarea"
 	                                      rows={3}
 	                                      value={exportSkillCommentDraft}
 	                                      onChange={(e) => setExportSkillCommentDraft(e.target.value)}
@@ -3669,9 +3848,7 @@ export default function RefineryPanel({
 	                                        type="button"
 	                                        onClick={submitSkillLineComment}
 	                                      >
-	                                        {exportSkillEditingCommentId
-	                                          ? t('refinery.commentUpdate')
-	                                          : t('refinery.commentSave')}
+	                                        {t('refinery.commentSave')}
 	                                      </button>
 	                                      <button
 	                                        className="btn btn-secondary btn-sm"
@@ -3679,7 +3856,6 @@ export default function RefineryPanel({
 	                                        onClick={() => {
 	                                          setExportSkillCommentComposerOpen(false)
 	                                          setExportSkillCommentDraft('')
-	                                          setExportSkillEditingCommentId(null)
 	                                        }}
 	                                      >
 	                                        {t('cancel')}
@@ -3802,46 +3978,47 @@ export default function RefineryPanel({
 	                </div>
 	              )}
 
-	              <div className="modal-footer">
-	                <button
-	                  className="btn btn-secondary"
-	                  type="button"
-	                  onClick={() => void runSkillLlm()}
-	                  disabled={exportSkillLoading}
-	                >
-	                  {exportSkillMode === 'fusion' ? t('refinery.runFusion') : t('refinery.runAnalysis')}
-	                </button>
-	                {exportSkillMode === 'analysis' &&
-	                exportSkillOptimizedFinal.trim() &&
-	                exportSkillPendingDiffs === 0 ? (
+	              {exportSkillMode === 'analysis' ? (
+	                exportSkillOptimizedFinal.trim() && exportSkillPendingDiffs === 0 ? (
+	                  <div className="modal-footer">
+	                    <button
+	                      className="btn btn-primary"
+	                      type="button"
+	                      onClick={() => void saveSkillOptimized()}
+	                      disabled={exportSkillLoading}
+	                    >
+	                      {t('refinery.saveOptimized')}
+	                    </button>
+	                  </div>
+	                ) : null
+	              ) : (
+	                <div className="modal-footer">
+	                  <button
+	                    className="btn btn-secondary"
+	                    type="button"
+	                    onClick={() => void runSkillLlm()}
+	                    disabled={exportSkillLoading}
+	                  >
+	                    {t('refinery.runFusion')}
+	                  </button>
+	                  <button
+	                    className="btn btn-secondary"
+	                    type="button"
+	                    onClick={closeExportSkill}
+	                    disabled={exportSkillLoading}
+	                  >
+	                    {t('cancel')}
+	                  </button>
 	                  <button
 	                    className="btn btn-primary"
 	                    type="button"
-	                    onClick={() => void saveSkillOptimized()}
+	                    onClick={() => void onSubmitExportSkill()}
 	                    disabled={exportSkillLoading}
 	                  >
-	                    {t('refinery.saveOptimized')}
+	                    {t('refinery.exportSkill')}
 	                  </button>
-	                ) : null}
-	                <button
-	                  className="btn btn-secondary"
-	                  type="button"
-	                  onClick={closeExportSkill}
-	                  disabled={exportSkillLoading}
-	                >
-                  {t('cancel')}
-                </button>
-                {exportSkillMode === 'fusion' ? (
-                  <button
-                    className="btn btn-primary"
-                    type="button"
-                    onClick={() => void onSubmitExportSkill()}
-                    disabled={exportSkillLoading}
-                  >
-                    {t('refinery.exportSkill')}
-                  </button>
-                ) : null}
-              </div>
+	                </div>
+	              )}
             </div>
           </div>
         </div>

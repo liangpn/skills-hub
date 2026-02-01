@@ -1119,6 +1119,14 @@
   min-width: 0;
 }
 
+.refinery-diff-grid.is-source-collapsed {
+  grid-template-columns: 1fr;
+}
+
+.refinery-diff-grid.refinery-diff-grid--analysis {
+  min-height: min(72vh, 720px);
+}
+
 .refinery-monaco-diff-stack {
   display: flex;
   flex-direction: column;
@@ -1158,12 +1166,47 @@
   gap: 10px;
 }
 
+.refinery-diff-title-row-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .refinery-analysis-toolbar {
   display: flex;
-  align-items: flex-end;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
   margin: 10px 0 12px;
+  flex-wrap: wrap;
+}
+
+.refinery-analysis-agent {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: min(420px, 100%);
+}
+
+.refinery-analysis-agent-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.refinery-analysis-agent-row .label {
+  margin-bottom: 0;
+  white-space: nowrap;
+}
+
+.refinery-analysis-toolbar-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex: 0 0 auto;
 }
 
 .tabs.tabs-sm {
@@ -1296,6 +1339,10 @@
 
 .refinery-analysis-editor-wrap {
   position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .refinery-line-comment-card {
@@ -1352,6 +1399,10 @@
   font-size: 12px;
   line-height: 1.4;
   white-space: pre-wrap;
+}
+
+.refinery-line-comment-textarea {
+  resize: vertical;
 }
 
 .refinery-line-comment-item-actions {
@@ -1595,6 +1646,12 @@
   overflow: auto;
 }
 
+.markdown-preview-fill {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+}
+
 .markdown-preview.markdown-line-review {
   padding-left: 10px;
   padding-right: 10px;
@@ -1660,6 +1717,14 @@
 .md-line-content {
   flex: 1;
   min-width: 0;
+}
+
+.md-line-li {
+  margin: 0.2em 0;
+}
+
+.md-line-li-inner {
+  width: 100%;
 }
 
 .monaco-comment-glyph {
@@ -1981,6 +2046,10 @@
 
 .modal-3xl {
   width: min(1280px, 100%);
+}
+
+.modal-4xl {
+  width: min(1440px, 100%);
 }
 
 .modal-header {
