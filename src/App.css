@@ -1257,9 +1257,17 @@
   margin-bottom: 10px;
 }
 
+.refinery-review-row .btn {
+  flex-shrink: 0;
+  white-space: nowrap;
+  min-width: 56px;
+}
+
 .refinery-review-textarea {
   resize: vertical;
   min-height: 64px;
+  flex: 1;
+  min-width: 0;
 }
 
 .refinery-review-details {
@@ -1319,9 +1327,9 @@
   height: 18px;
   padding: 0 6px;
   border-radius: 999px;
-  background: rgba(56, 189, 248, 0.16);
-  border: 1px solid rgba(56, 189, 248, 0.32);
-  color: var(--text-primary);
+  background: var(--success-soft-bg);
+  border: 1px solid var(--success-soft-border);
+  color: var(--status-success);
   font-size: 11px;
 }
 
@@ -1655,23 +1663,96 @@
 .markdown-preview.markdown-line-review {
   padding-left: 10px;
   padding-right: 10px;
+  background: var(--bg-app);
+  border-color: var(--border-subtle);
+}
+
+.markdown-preview.markdown-line-review :where(h1, h2, h3, h4, h5, h6, p, pre) {
+  margin: 0;
+}
+
+.markdown-preview.markdown-line-review :where(blockquote, table, ul, ol) {
+  margin: 0;
+}
+
+.markdown-preview.markdown-line-review :where(ul, ol) {
+  padding-left: 0;
+}
+
+.markdown-preview.markdown-line-review li.md-line-li {
+  list-style: none;
+}
+
+.markdown-preview.markdown-line-review li :where(ul, ol) {
+  padding-left: 26px;
+  margin-top: 4px;
+}
+
+.markdown-preview.markdown-line-review ol {
+  counter-reset: md-ol;
+}
+
+.markdown-preview.markdown-line-review ol > li.md-line-li {
+  counter-increment: md-ol;
+}
+
+.md-line-content.md-line-content-list {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.md-list-marker {
+  flex: 0 0 18px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+  padding-top: 1px;
+  font-family: var(--font-mono);
+  color: var(--text-tertiary);
+}
+
+.md-list-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.markdown-preview.markdown-line-review ul > li.md-line-li > .md-line-li-inner .md-list-marker::before {
+  content: '•';
+}
+
+.markdown-preview.markdown-line-review ul > li.md-line-li > .md-line-li-inner .md-list-marker {
+  justify-content: center;
+}
+
+.markdown-preview.markdown-line-review ol > li.md-line-li > .md-line-li-inner .md-list-marker::before {
+  content: counter(md-ol) '.';
 }
 
 .md-line {
   display: flex;
-  align-items: flex-start;
+  align-items: stretch;
   gap: 10px;
   min-width: 0;
+  padding: 6px 0;
+}
+
+.markdown-preview.markdown-line-review .md-line:hover {
+  background: var(--success-soft-bg);
+  border-radius: var(--radius-md);
 }
 
 .md-line-gutter {
+  position: relative;
   width: 26px;
   flex: 0 0 26px;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 6px;
+  justify-content: flex-start;
+  gap: 0;
   padding-top: 2px;
+  align-self: stretch;
 }
 
 .md-line-btn {
@@ -1693,9 +1774,9 @@
 .md-line:hover .md-line-btn {
   opacity: 1;
   pointer-events: auto;
-  background: var(--bg-element);
-  color: var(--text-primary);
-  transform: translateY(-1px);
+  background: var(--success-soft-bg);
+  border-color: var(--success-soft-border);
+  color: var(--status-success);
 }
 
 .md-line-count {
@@ -1704,9 +1785,13 @@
   line-height: 16px;
   padding: 0 6px;
   border-radius: 999px;
-  background: rgba(56, 189, 248, 0.16);
-  border: 1px solid rgba(56, 189, 248, 0.32);
-  color: var(--text-primary);
+  background: var(--success-soft-bg);
+  border: 1px solid var(--success-soft-border);
+  color: var(--status-success);
+  position: absolute;
+  left: 50%;
+  bottom: 2px;
+  transform: translateX(-50%);
 }
 
 .md-line-spacer {
@@ -1725,6 +1810,33 @@
 
 .md-line-li-inner {
   width: 100%;
+}
+
+.md-nested-markdown {
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-app);
+}
+
+.markdown-preview.markdown-line-review .md-nested-markdown :where(h1, h2, h3, h4, h5, h6) {
+  margin: 0.6em 0 0.4em;
+}
+
+.markdown-preview.markdown-line-review .md-nested-markdown :where(p) {
+  margin: 0.5em 0;
+}
+
+.markdown-preview.markdown-line-review .md-nested-markdown :where(blockquote, table, ul, ol, pre, hr) {
+  margin: 0.6em 0;
+}
+
+.markdown-preview.markdown-line-review .md-nested-markdown :where(ul, ol) {
+  padding-left: 22px;
+}
+
+.markdown-preview.markdown-line-review .md-nested-markdown :where(ul.contains-task-list) {
+  padding-left: 0;
 }
 
 .monaco-comment-glyph {

@@ -1,6 +1,7 @@
 import {
   createContext,
   createElement,
+  isValidElement,
   useCallback,
   useContext,
   useEffect,
@@ -173,6 +174,44 @@ const newReviewCommentId = () => {
     return crypto.randomUUID()
   }
   return `c-${Date.now()}-${Math.random().toString(16).slice(2)}`
+}
+
+const looksLikeMarkdownText = (text: string) => {
+  const t = text.trim()
+  if (!t) return false
+  const lines = t.split('\n').slice(0, 48)
+  let hits = 0
+  let listHits = 0
+  for (const line of lines) {
+    if (/^\s*```/.test(line)) {
+      hits += 2
+    } else if (/^\s*#{1,6}\s+/.test(line)) {
+      hits += 1
+    } else if (/^\s*([-*+]|\d+\.)\s+/.test(line)) {
+      hits += 1
+      listHits += 1
+    } else if (/^\s*>\s+/.test(line)) {
+      hits += 1
+    } else if (/^\s*\|.+\|\s*$/.test(line)) {
+      hits += 1
+    }
+    if (hits >= 2) return true
+  }
+  if (lines.length <= 6 && (hits >= 1 || listHits >= 1)) return true
+  return false
+}
+
+const unwrapSingleMarkdownFence = (text: string) => {
+  const trimmed = text.trim()
+  const match = /^```([^\n]*)\n([\s\S]*?)\n```$/m.exec(trimmed)
+  if (!match) return text
+
+  const info = (match[1] ?? '').trim().toLowerCase().split(/\s+/)[0] ?? ''
+  if (info && !['md', 'markdown', 'text', 'txt'].includes(info)) return text
+
+  const inner = match[2] ?? ''
+  if (!looksLikeMarkdownText(inner)) return text
+  return inner.trimEnd()
 }
 
 const indentLines = (text: string, spaces: number) => {
@@ -527,11 +566,28 @@ export default function RefineryPanel({
     return byLine
   }, [exportLineComments])
   const exportActiveLineComments = useMemo(() => {
-    if (!exportCommentLine) return []
+    if (exportCommentLine === null) return []
     return exportLineComments
       .filter((c) => c.line === exportCommentLine)
       .sort((a, b) => a.created_at_ms - b.created_at_ms)
   }, [exportCommentLine, exportLineComments])
+
+  useEffect(() => {
+    if (exportCommentLine === null) return
+    if (exportCommentComposerOpen) return
+    if (exportEditingCommentId) return
+    const hasAny = exportLineComments.some((c) => c.line === exportCommentLine)
+    if (hasAny) return
+    setExportCommentLine(null)
+    setExportCommentComposerOpen(false)
+    setExportCommentDraft('')
+    setExportEditingCommentId(null)
+  }, [
+    exportCommentComposerOpen,
+    exportCommentLine,
+    exportEditingCommentId,
+    exportLineComments,
+  ])
 
   const exportSkillReviewCount = useMemo(() => exportSkillLineComments.length, [exportSkillLineComments])
   const exportSkillReviewGroups = useMemo(() => {
@@ -558,11 +614,28 @@ export default function RefineryPanel({
     return byLine
   }, [exportSkillLineComments])
   const exportSkillActiveLineComments = useMemo(() => {
-    if (!exportSkillCommentLine) return []
+    if (exportSkillCommentLine === null) return []
     return exportSkillLineComments
       .filter((c) => c.line === exportSkillCommentLine)
       .sort((a, b) => a.created_at_ms - b.created_at_ms)
   }, [exportSkillCommentLine, exportSkillLineComments])
+
+  useEffect(() => {
+    if (exportSkillCommentLine === null) return
+    if (exportSkillCommentComposerOpen) return
+    if (exportSkillEditingCommentId) return
+    const hasAny = exportSkillLineComments.some((c) => c.line === exportSkillCommentLine)
+    if (hasAny) return
+    setExportSkillCommentLine(null)
+    setExportSkillCommentComposerOpen(false)
+    setExportSkillCommentDraft('')
+    setExportSkillEditingCommentId(null)
+  }, [
+    exportSkillCommentComposerOpen,
+    exportSkillCommentLine,
+    exportSkillEditingCommentId,
+    exportSkillLineComments,
+  ])
 
   const registerExportLineAnchor = useCallback((line: number | null, el: HTMLElement | null) => {
     if (!line) return
@@ -1366,14 +1439,14 @@ export default function RefineryPanel({
         analysisMd: null,
       })
       if (exportMode === 'fusion') {
-        setExportResult(out)
+        setExportResult(unwrapSingleMarkdownFence(out))
         setExportContentTab('preview')
         setExportAnalysis('')
         setExportOptimized('')
         setExportDiffHunks([])
       } else {
         resetWorkRuleReview()
-        setExportAnalysis(out)
+        setExportAnalysis(unwrapSingleMarkdownFence(out))
         setExportOptimized('')
         setExportDiffHunks([])
       }
@@ -1388,8 +1461,9 @@ export default function RefineryPanel({
   const openWorkRuleLineComment = useCallback(
     (line: number, compose: boolean = false) => {
       if (!exportAnalysis.trim()) return
+      const hasExisting = exportLineComments.some((c) => c.line === line)
       setExportCommentLine(line)
-      setExportCommentComposerOpen(compose)
+      setExportCommentComposerOpen(compose || !hasExisting)
       setExportCommentDraft('')
       setExportEditingCommentId(null)
 
@@ -1409,7 +1483,7 @@ export default function RefineryPanel({
         setExportCommentCardTop(12)
       }
     },
-    [exportAnalysis],
+    [exportAnalysis, exportLineComments],
   )
 
   const startEditWorkRuleLineComment = useCallback(
@@ -1434,7 +1508,7 @@ export default function RefineryPanel({
   )
 
   const submitWorkRuleLineComment = useCallback(() => {
-    if (!exportCommentLine) return
+    if (exportCommentLine === null) return
     const body = exportCommentDraft.trim()
     if (!body) return
 
@@ -1523,16 +1597,17 @@ export default function RefineryPanel({
     setExportLoading(true)
     try {
       const analysisMd = buildAnalysisWithReviewComments(exportAnalysis, exportReviewMessage, exportLineComments)
-      const out = await invokeTauri<string>('run_llm_agent', {
-        agentId: exportAgentId,
-        mode: 'optimize',
-        outputKind: 'work_rule',
-        sourceMd: exportContent,
-        analysisMd,
-      })
-      setExportOptimized(out)
-      setExportDiffHunks(initHunkStates(buildLineDiffHunks(exportContent, out)))
-      toast.success(t('refinery.optimizeDone'))
+	      const out = await invokeTauri<string>('run_llm_agent', {
+	        agentId: exportAgentId,
+	        mode: 'optimize',
+	        outputKind: 'work_rule',
+	        sourceMd: exportContent,
+	        analysisMd,
+	      })
+	      const normalized = unwrapSingleMarkdownFence(out)
+	      setExportOptimized(normalized)
+	      setExportDiffHunks(initHunkStates(buildLineDiffHunks(exportContent, normalized)))
+	      toast.success(t('refinery.optimizeDone'))
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err))
     } finally {
@@ -1640,25 +1715,25 @@ export default function RefineryPanel({
 
     setExportSkillLoading(true)
     try {
-      const out = await invokeTauri<string>('run_llm_agent', {
-        agentId: exportSkillAgentId,
-        mode: exportSkillMode,
-        outputKind: 'skill',
-        sourceMd: exportSkillContent,
-        analysisMd: null,
-      })
-      if (exportSkillMode === 'fusion') {
-        setExportSkillResult(out)
-        setExportSkillContentTab('preview')
-        setExportSkillAnalysis('')
-        setExportSkillOptimized('')
-        setExportSkillDiffHunks([])
-      } else {
-        resetSkillReview()
-        setExportSkillAnalysis(out)
-        setExportSkillOptimized('')
-        setExportSkillDiffHunks([])
-      }
+	      const out = await invokeTauri<string>('run_llm_agent', {
+	        agentId: exportSkillAgentId,
+	        mode: exportSkillMode,
+	        outputKind: 'skill',
+	        sourceMd: exportSkillContent,
+	        analysisMd: null,
+	      })
+	      if (exportSkillMode === 'fusion') {
+	        setExportSkillResult(unwrapSingleMarkdownFence(out))
+	        setExportSkillContentTab('preview')
+	        setExportSkillAnalysis('')
+	        setExportSkillOptimized('')
+	        setExportSkillDiffHunks([])
+	      } else {
+	        resetSkillReview()
+	        setExportSkillAnalysis(unwrapSingleMarkdownFence(out))
+	        setExportSkillOptimized('')
+	        setExportSkillDiffHunks([])
+	      }
       toast.success(
         exportSkillMode === 'fusion' ? t('refinery.fusionDone') : t('refinery.analysisDone'),
       )
@@ -1681,8 +1756,9 @@ export default function RefineryPanel({
   const openSkillLineComment = useCallback(
     (line: number, compose: boolean = false) => {
       if (!exportSkillAnalysis.trim()) return
+      const hasExisting = exportSkillLineComments.some((c) => c.line === line)
       setExportSkillCommentLine(line)
-      setExportSkillCommentComposerOpen(compose)
+      setExportSkillCommentComposerOpen(compose || !hasExisting)
       setExportSkillCommentDraft('')
       setExportSkillEditingCommentId(null)
 
@@ -1702,7 +1778,7 @@ export default function RefineryPanel({
         setExportSkillCommentCardTop(12)
       }
     },
-    [exportSkillAnalysis],
+    [exportSkillAnalysis, exportSkillLineComments],
   )
 
   const startEditSkillLineComment = useCallback(
@@ -1727,7 +1803,7 @@ export default function RefineryPanel({
   )
 
   const submitSkillLineComment = useCallback(() => {
-    if (!exportSkillCommentLine) return
+    if (exportSkillCommentLine === null) return
     const body = exportSkillCommentDraft.trim()
     if (!body) return
 
@@ -1807,6 +1883,126 @@ export default function RefineryPanel({
       return MarkdownLineWrapped
     }
 
+    function MarkdownPreWrapped({
+      node,
+      children,
+      ...props
+    }: { node?: unknown; children?: unknown } & Record<string, unknown>) {
+      const mode = useContext(MarkdownLineWrapModeContext)
+      if (mode === 'in_list_item') {
+        return createElement('pre', props, children as ReactNode)
+      }
+
+      const line = getLine(node)
+      const count = line ? (exportLineCommentCounts.get(line) ?? 0) : 0
+
+      const extractText = (value: unknown): string => {
+        if (value === null || value === undefined) return ''
+        if (typeof value === 'string') return value
+        if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+        if (Array.isArray(value)) return value.map(extractText).join('')
+        if (isValidElement(value)) {
+          return extractText((value.props as { children?: unknown } | null)?.children)
+        }
+        return ''
+      }
+
+      const looksLikeMarkdown = (text: string) => {
+        const t = text.trim()
+        if (!t) return false
+        const lines = t.split('\n').slice(0, 48)
+        let hits = 0
+        let listHits = 0
+        for (const line of lines) {
+          if (/^\s*```/.test(line)) {
+            hits += 2
+          } else if (/^\s*#{1,6}\s+/.test(line)) {
+            hits += 1
+          } else if (/^\s*([-*+]|\d+\.)\s+/.test(line)) {
+            hits += 1
+            listHits += 1
+          } else if (/^\s*>\s+/.test(line)) {
+            hits += 1
+          } else if (/^\s*\|.+\|\s*$/.test(line)) {
+            hits += 1
+          }
+
+          if (hits >= 2) return true
+        }
+
+        if (lines.length <= 6 && (hits >= 1 || listHits >= 1)) return true
+        return false
+      }
+
+      let nestedMd: string | null = null
+      let lang: string | undefined
+      let codeText = ''
+      const childNodes = Array.isArray(children) ? children : [children]
+      const codeChild = childNodes.find(
+        (c) =>
+          isValidElement(c) &&
+          typeof c.type === 'string' &&
+          c.type.toLowerCase() === 'code',
+      )
+      if (codeChild && isValidElement(codeChild)) {
+        const className =
+          ((codeChild.props as { className?: string } | null)?.className ?? '').trim()
+        const match = /language-([\w-]+)/.exec(className)
+        const codeRaw = (codeChild.props as { children?: unknown } | null)?.children
+        lang = match?.[1]?.toLowerCase()
+        codeText = extractText(codeRaw)
+      } else {
+        codeText = extractText(children)
+      }
+
+      if (codeText.trim()) {
+        if (lang === 'md' || lang === 'markdown') {
+          nestedMd = codeText
+        } else if (!lang || lang === 'text') {
+          if (looksLikeMarkdown(codeText)) nestedMd = codeText
+        }
+      }
+
+      const body =
+        nestedMd !== null ? (
+          <div className="md-nested-markdown">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{nestedMd.replace(/\n$/, '')}</ReactMarkdown>
+          </div>
+        ) : (
+          createElement('pre', props, children as ReactNode)
+        )
+
+      return (
+        <div
+          className="md-line"
+          data-line={line ?? undefined}
+          ref={(el) => registerExportLineAnchor(line, el)}
+        >
+          <div className="md-line-gutter">
+            {line ? (
+              <button
+                className="md-line-btn"
+                type="button"
+                onClick={(e) => {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  openWorkRuleLineComment(line, true)
+                }}
+                title={t('refinery.addLineComment')}
+                aria-label={t('refinery.addLineComment')}
+              >
+                <Plus size={14} />
+              </button>
+            ) : (
+              <span className="md-line-spacer" />
+            )}
+            {line && count > 0 ? <span className="md-line-count">{count}</span> : null}
+          </div>
+          <div className="md-line-content">{body}</div>
+        </div>
+      )
+    }
+
     const wrapListItem = ({
       node,
       children,
@@ -1845,10 +2041,13 @@ export default function RefineryPanel({
               )}
               {line && count > 0 ? <span className="md-line-count">{count}</span> : null}
             </div>
-            <div className="md-line-content">
-              <MarkdownLineWrapModeContext.Provider value="in_list_item">
-                {children as ReactNode}
-              </MarkdownLineWrapModeContext.Provider>
+            <div className="md-line-content md-line-content-list">
+              <span className="md-list-marker" aria-hidden="true" />
+              <div className="md-list-body">
+                <MarkdownLineWrapModeContext.Provider value="in_list_item">
+                  {children as ReactNode}
+                </MarkdownLineWrapModeContext.Provider>
+              </div>
             </div>
           </div>
         </li>
@@ -1863,7 +2062,7 @@ export default function RefineryPanel({
       h4: wrap('h4'),
       h5: wrap('h5'),
       h6: wrap('h6'),
-      pre: wrap('pre'),
+      pre: MarkdownPreWrapped,
       li: wrapListItem,
     } as Record<string, unknown>
   }, [
@@ -1925,6 +2124,126 @@ export default function RefineryPanel({
       return MarkdownLineWrapped
     }
 
+    function MarkdownPreWrapped({
+      node,
+      children,
+      ...props
+    }: { node?: unknown; children?: unknown } & Record<string, unknown>) {
+      const mode = useContext(MarkdownLineWrapModeContext)
+      if (mode === 'in_list_item') {
+        return createElement('pre', props, children as ReactNode)
+      }
+
+      const line = getLine(node)
+      const count = line ? (exportSkillLineCommentCounts.get(line) ?? 0) : 0
+
+      const extractText = (value: unknown): string => {
+        if (value === null || value === undefined) return ''
+        if (typeof value === 'string') return value
+        if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+        if (Array.isArray(value)) return value.map(extractText).join('')
+        if (isValidElement(value)) {
+          return extractText((value.props as { children?: unknown } | null)?.children)
+        }
+        return ''
+      }
+
+      const looksLikeMarkdown = (text: string) => {
+        const t = text.trim()
+        if (!t) return false
+        const lines = t.split('\n').slice(0, 48)
+        let hits = 0
+        let listHits = 0
+        for (const line of lines) {
+          if (/^\s*```/.test(line)) {
+            hits += 2
+          } else if (/^\s*#{1,6}\s+/.test(line)) {
+            hits += 1
+          } else if (/^\s*([-*+]|\d+\.)\s+/.test(line)) {
+            hits += 1
+            listHits += 1
+          } else if (/^\s*>\s+/.test(line)) {
+            hits += 1
+          } else if (/^\s*\|.+\|\s*$/.test(line)) {
+            hits += 1
+          }
+
+          if (hits >= 2) return true
+        }
+
+        if (lines.length <= 6 && (hits >= 1 || listHits >= 1)) return true
+        return false
+      }
+
+      let nestedMd: string | null = null
+      let lang: string | undefined
+      let codeText = ''
+      const childNodes = Array.isArray(children) ? children : [children]
+      const codeChild = childNodes.find(
+        (c) =>
+          isValidElement(c) &&
+          typeof c.type === 'string' &&
+          c.type.toLowerCase() === 'code',
+      )
+      if (codeChild && isValidElement(codeChild)) {
+        const className =
+          ((codeChild.props as { className?: string } | null)?.className ?? '').trim()
+        const match = /language-([\w-]+)/.exec(className)
+        const codeRaw = (codeChild.props as { children?: unknown } | null)?.children
+        lang = match?.[1]?.toLowerCase()
+        codeText = extractText(codeRaw)
+      } else {
+        codeText = extractText(children)
+      }
+
+      if (codeText.trim()) {
+        if (lang === 'md' || lang === 'markdown') {
+          nestedMd = codeText
+        } else if (!lang || lang === 'text') {
+          if (looksLikeMarkdown(codeText)) nestedMd = codeText
+        }
+      }
+
+      const body =
+        nestedMd !== null ? (
+          <div className="md-nested-markdown">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{nestedMd.replace(/\n$/, '')}</ReactMarkdown>
+          </div>
+        ) : (
+          createElement('pre', props, children as ReactNode)
+        )
+
+      return (
+        <div
+          className="md-line"
+          data-line={line ?? undefined}
+          ref={(el) => registerExportSkillLineAnchor(line, el)}
+        >
+          <div className="md-line-gutter">
+            {line ? (
+              <button
+                className="md-line-btn"
+                type="button"
+                onClick={(e) => {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  openSkillLineComment(line, true)
+                }}
+                title={t('refinery.addLineComment')}
+                aria-label={t('refinery.addLineComment')}
+              >
+                <Plus size={14} />
+              </button>
+            ) : (
+              <span className="md-line-spacer" />
+            )}
+            {line && count > 0 ? <span className="md-line-count">{count}</span> : null}
+          </div>
+          <div className="md-line-content">{body}</div>
+        </div>
+      )
+    }
+
     const wrapListItem = ({
       node,
       children,
@@ -1963,10 +2282,13 @@ export default function RefineryPanel({
               )}
               {line && count > 0 ? <span className="md-line-count">{count}</span> : null}
             </div>
-            <div className="md-line-content">
-              <MarkdownLineWrapModeContext.Provider value="in_list_item">
-                {children as ReactNode}
-              </MarkdownLineWrapModeContext.Provider>
+            <div className="md-line-content md-line-content-list">
+              <span className="md-list-marker" aria-hidden="true" />
+              <div className="md-list-body">
+                <MarkdownLineWrapModeContext.Provider value="in_list_item">
+                  {children as ReactNode}
+                </MarkdownLineWrapModeContext.Provider>
+              </div>
             </div>
           </div>
         </li>
@@ -1981,7 +2303,7 @@ export default function RefineryPanel({
       h4: wrap('h4'),
       h5: wrap('h5'),
       h6: wrap('h6'),
-      pre: wrap('pre'),
+      pre: MarkdownPreWrapped,
       li: wrapListItem,
     } as Record<string, unknown>
   }, [
@@ -2056,16 +2378,17 @@ export default function RefineryPanel({
         exportSkillReviewMessage,
         exportSkillLineComments,
       )
-      const out = await invokeTauri<string>('run_llm_agent', {
-        agentId: exportSkillAgentId,
-        mode: 'optimize',
-        outputKind: 'skill',
-        sourceMd: exportSkillContent,
-        analysisMd,
-      })
-      setExportSkillOptimized(out)
-      setExportSkillDiffHunks(initHunkStates(buildLineDiffHunks(exportSkillContent, out)))
-      toast.success(t('refinery.optimizeDone'))
+	      const out = await invokeTauri<string>('run_llm_agent', {
+	        agentId: exportSkillAgentId,
+	        mode: 'optimize',
+	        outputKind: 'skill',
+	        sourceMd: exportSkillContent,
+	        analysisMd,
+	      })
+	      const normalized = unwrapSingleMarkdownFence(out)
+	      setExportSkillOptimized(normalized)
+	      setExportSkillDiffHunks(initHunkStates(buildLineDiffHunks(exportSkillContent, normalized)))
+	      toast.success(t('refinery.optimizeDone'))
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err))
     } finally {
@@ -3008,15 +3331,15 @@ export default function RefineryPanel({
 	                            ) : (
 	                              <div className="refinery-review-actions">
 	                                <div className="refinery-review-popover-anchor">
-	                                <button
-	                                  ref={exportReviewButtonRef}
-	                                  className="btn btn-secondary btn-sm"
-	                                  type="button"
-	                                  onClick={() => setExportReviewOpen((v) => !v)}
-	                                  disabled={exportLoading}
-	                                >
-	                                  {t('refinery.review')} · {exportReviewCount}
-	                                </button>
+		                                <button
+		                                  ref={exportReviewButtonRef}
+		                                  className={`btn btn-sm ${exportReviewCount > 0 ? 'btn-primary' : 'btn-secondary'}`}
+		                                  type="button"
+		                                  onClick={() => setExportReviewOpen((v) => !v)}
+		                                  disabled={exportLoading}
+		                                >
+		                                  {t('refinery.review')} · {exportReviewCount}
+		                                </button>
 	                                {exportReviewOpen ? (
 	                                  <div className="refinery-review-popover" ref={exportReviewPopoverRef}>
 	                                    <div className="refinery-review-title">{t('refinery.reviewTitle')}</div>
@@ -3648,15 +3971,15 @@ export default function RefineryPanel({
 	                            ) : (
 	                              <div className="refinery-review-actions">
 	                                <div className="refinery-review-popover-anchor">
-	                                <button
-	                                  ref={exportSkillReviewButtonRef}
-	                                  className="btn btn-secondary btn-sm"
-	                                  type="button"
-	                                  onClick={() => setExportSkillReviewOpen((v) => !v)}
-	                                  disabled={exportSkillLoading}
-	                                >
-	                                  {t('refinery.review')} · {exportSkillReviewCount}
-	                                </button>
+		                                <button
+		                                  ref={exportSkillReviewButtonRef}
+		                                  className={`btn btn-sm ${exportSkillReviewCount > 0 ? 'btn-primary' : 'btn-secondary'}`}
+		                                  type="button"
+		                                  onClick={() => setExportSkillReviewOpen((v) => !v)}
+		                                  disabled={exportSkillLoading}
+		                                >
+		                                  {t('refinery.review')} · {exportSkillReviewCount}
+		                                </button>
 	                                {exportSkillReviewOpen ? (
 	                                  <div className="refinery-review-popover" ref={exportSkillReviewPopoverRef}>
 	                                    <div className="refinery-review-title">{t('refinery.reviewTitle')}</div>
