@@ -24,9 +24,9 @@
 - [x] 分析弹框：左侧“原文件/源文件”支持折叠/展开（让右侧分析区可放大）
 - [x] 分析弹框：将 `Agent` 下拉、`Run analysis`、`Cancel` 放同一行（节省纵向空间）
 - [x] 行评论：移除 “Add comment” 按钮；点击 `Edit` 即进入编辑态，底部仅保留 `Update/Cancel`
-- [x] 行评论：“+” 改为 hover 显示（避免视觉噪音），且避免 Markdown 嵌套结构产生多个 “+” 叠加；同时保证在多行块/有计数 badge 时对齐稳定
+- [x] 行评论：“+” 改为 hover 显示（避免视觉噪音），且避免 Markdown 嵌套结构产生多个 “+” 叠加；同时保证在多行块/有计数 badge 时对齐稳定；删除最后一条行评论后自动关闭卡片
 - [x] 分析结果渲染：确保全量 Markdown 语法（标题/列表/表格/代码块/引用/分隔线等）都有明显样式
-- [x] 分析结果渲染：确保“建议大纲/建议结构”等段落也按 Markdown 正常渲染（不是纯文本），并在 line-review 模式下恢复必要的 margin/indent
+- [x] 分析结果渲染：确保“建议大纲/建议结构”等段落也按 Markdown 正常渲染（不是纯文本），并在 line-review 模式下恢复必要的 margin/indent；兼容 LLM 将整段输出包裹在单个 ```md/```text fence 的情况（自动 unwrap）
 - [ ] Agent prompt 生效可验证：提供“本次请求使用了哪个 agent.prompt_md / provider.model”的可视化；必要时提供 debug 开关展示请求 payload（用于排查“prompt 不起效”）
 
 ### Milestone 1.2：Skills Hub 管理体验（删除/清理）
