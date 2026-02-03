@@ -6,7 +6,7 @@
 - [x] 确认新 skill 的默认落点与管理闭环：默认只写 `~/.codex/skills`，可选导入 Hub
 - [x] 确认 battle 的定义：默认展示差异，可选引入评价 Agent（名：`待定`）
 - [x] 明确 v1 支持的 skill 生态格式：以 `agentskills.io` 标准为准
-- [x] 选择首个 API provider（OpenAI）与 Key 存储方式（通过 `.env`/环境变量，不在 App 内录入）
+- [x] 选择首个 API provider（OpenAI）与 Key 存储方式：默认存入本机 app sqlite；可选从 `~/.work-rules/.env` 读取环境变量
 - [x] 确认 work_rule 资产库结构：`~/.work-rules/<name>/` + `manifest.json` + 固定 1 个入口文件
 
 ## Milestone 1：Refinery UI（能选能存）
@@ -23,11 +23,12 @@
 - [x] 分析弹框：整体宽高增大（桌面端优先），减少“空白但内容挤”的情况
 - [x] 分析弹框：左侧“原文件/源文件”支持折叠/展开（让右侧分析区可放大）
 - [x] 分析弹框：将 `Agent` 下拉、`Run analysis`、`Cancel` 放同一行（节省纵向空间）
+- [x] 分析弹框：运行分析时左侧原文保持可见（不随 loading 变“加载中”）；左右标题分割线对齐
 - [x] 行评论：移除 “Add comment” 按钮；点击 `Edit` 即进入编辑态，底部仅保留 `Update/Cancel`
 - [x] 行评论：“+” 改为 hover 显示（避免视觉噪音），且避免 Markdown 嵌套结构产生多个 “+” 叠加；同时保证在多行块/有计数 badge 时对齐稳定；删除最后一条行评论后自动关闭卡片
 - [x] 分析结果渲染：确保全量 Markdown 语法（标题/列表/表格/代码块/引用/分隔线等）都有明显样式
 - [x] 分析结果渲染：确保“建议大纲/建议结构”等段落也按 Markdown 正常渲染（不是纯文本），并在 line-review 模式下恢复必要的 margin/indent；兼容 LLM 将整段输出包裹在单个 ```md/```text fence 的情况（自动 unwrap）
-- [ ] Agent prompt 生效可验证：提供“本次请求使用了哪个 agent.prompt_md / provider.model”的可视化；必要时提供 debug 开关展示请求 payload（用于排查“prompt 不起效”）
+- [ ] Agent prompt 生效可验证：提供“本次请求使用了哪个 prompt/agent/provider.model”的可视化；必要时提供 debug 开关展示请求 payload（用于排查“prompt 不起效”）
 
 ### Milestone 1.2：Skills Hub 管理体验（删除/清理）
 
@@ -51,6 +52,13 @@
 - [x] 增加设置项：provider 选择 + key/命令路径（存入 `settings`）
 - [x] 实现第一个 provider（按 M0 的决定）
 - [x] UI：展示 report + 支持用户 review/评论，作为后续优化输入
+
+## Milestone 4.1：Prompts（系统 Prompt 资产库）
+
+- [x] 后端：新增 `llm_prompts` 表 + v6 migration（从 `llm_agents.prompt_md` 回填 prompt）
+- [x] 前端：新增 Tab：`Prompts`（CRUD + Markdown 编辑/预览）
+- [x] Agents：从“编辑 prompt 文本”改为选择 prompt（`prompt_id`）
+- [x] 运行：`run_llm_agent` / `run_skill_audit` 使用 `prompt_id` 解析 system prompt（prompt 修改可即时影响 agent）
 
 ## Milestone 5：产出新 Skill（Export）
 

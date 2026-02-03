@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 
-use crate::core::skill_store::{SkillRecord, SkillStore, SkillTargetRecord};
+use crate::core::skill_store::{
+    LlmAgentRecord, LlmPromptRecord, LlmProviderRecord, SkillRecord, SkillStore, SkillTargetRecord,
+};
 
 fn make_store() -> (tempfile::TempDir, SkillStore) {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -27,10 +29,70 @@ fn make_skill(id: &str, name: &str, central_path: &str, updated_at: i64) -> Skil
     }
 }
 
+fn make_llm_provider(id: &str, name: &str) -> LlmProviderRecord {
+    LlmProviderRecord {
+        id: id.to_string(),
+        name: name.to_string(),
+        provider_type: "openai".to_string(),
+        base_url: Some("https://api.openai.com/v1".to_string()),
+        api_key_env: None,
+        api_key: None,
+        default_model: Some("gpt-4o-mini".to_string()),
+        created_at_ms: 1,
+        updated_at_ms: 1,
+    }
+}
+
+fn make_llm_prompt(id: &str, name: &str, prompt_md: &str) -> LlmPromptRecord {
+    LlmPromptRecord {
+        id: id.to_string(),
+        name: name.to_string(),
+        prompt_md: prompt_md.to_string(),
+        created_at_ms: 1,
+        updated_at_ms: 1,
+    }
+}
+
 #[test]
 fn schema_is_idempotent() {
     let (_dir, store) = make_store();
     store.ensure_schema().expect("ensure_schema again");
+}
+
+#[test]
+fn resolve_llm_agent_system_prompt_prefers_prompt_table() {
+    let (_dir, store) = make_store();
+
+    store
+        .upsert_llm_provider(&make_llm_provider("p1", "provider-1"))
+        .unwrap();
+    store
+        .upsert_llm_prompt(&make_llm_prompt("pr1", "prompt-1", "PROMPT_FROM_TABLE"))
+        .unwrap();
+
+    let agent = LlmAgentRecord {
+        id: "a1".to_string(),
+        name: "agent-1".to_string(),
+        provider_id: "p1".to_string(),
+        model: None,
+        prompt_md: "INLINE_PROMPT".to_string(),
+        prompt_id: Some("pr1".to_string()),
+        created_at_ms: 1,
+        updated_at_ms: 1,
+    };
+    assert_eq!(
+        store.resolve_llm_agent_system_prompt(&agent).unwrap(),
+        "PROMPT_FROM_TABLE"
+    );
+
+    let agent_inline = LlmAgentRecord {
+        prompt_id: None,
+        ..agent
+    };
+    assert_eq!(
+        store.resolve_llm_agent_system_prompt(&agent_inline).unwrap(),
+        "INLINE_PROMPT"
+    );
 }
 
 #[test]
@@ -258,7 +320,7 @@ CREATE INDEX IF NOT EXISTS idx_skills_updated_at ON skills(updated_at);
     let user_version: i32 = conn
         .query_row("PRAGMA user_version;", [], |row| row.get(0))
         .expect("user_version");
-    assert_eq!(user_version, 5);
+    assert_eq!(user_version, 6);
 
     let tables: i64 = conn
         .query_row(
@@ -296,6 +358,15 @@ CREATE INDEX IF NOT EXISTS idx_skills_updated_at ON skills(updated_at);
         .expect("tables4");
     assert_eq!(tables, 1);
 
+    let tables: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='llm_prompts';",
+            [],
+            |row| row.get(0),
+        )
+        .expect("tables5");
+    assert_eq!(tables, 1);
+
     // v5 adds stored provider API keys (api_key column).
     let cols: Vec<String> = conn
         .prepare("PRAGMA table_info(llm_providers);")
@@ -316,6 +387,128 @@ CREATE INDEX IF NOT EXISTS idx_skills_updated_at ON skills(updated_at);
         .collect();
     assert!(cols.contains(&"skill_key".to_string()));
     assert!(cols.contains(&"managed_skill_id".to_string()));
+
+    // v6 adds prompt_id on llm_agents.
+    let cols: Vec<String> = conn
+        .prepare("PRAGMA table_info(llm_agents);")
+        .expect("pragma stmt agents")
+        .query_map([], |row| row.get::<_, String>(1))
+        .expect("pragma rows agents")
+        .map(|r| r.expect("col"))
+        .collect();
+    assert!(cols.contains(&"prompt_id".to_string()));
+}
+
+#[test]
+fn migrates_schema_v5_to_v6_adds_prompts_and_backfills_agent_prompt_id() {
+    use rusqlite::Connection;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = dir.path().join("test.db");
+
+    // Simulate an existing v5 database created by an older app version (agents store prompt_md inline).
+    let conn = Connection::open(&db).expect("open");
+    conn.execute_batch("PRAGMA foreign_keys = ON;").expect("pragma");
+    conn.execute_batch(
+        r#"
+CREATE TABLE IF NOT EXISTS llm_providers (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE,
+  provider_type TEXT NOT NULL,
+  base_url TEXT NULL,
+  api_key_env TEXT NULL,
+  default_model TEXT NULL,
+  created_at_ms INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL,
+  api_key TEXT NULL
+);
+
+CREATE TABLE IF NOT EXISTS llm_agents (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE,
+  provider_id TEXT NOT NULL,
+  model TEXT NULL,
+  prompt_md TEXT NOT NULL,
+  created_at_ms INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL,
+  FOREIGN KEY(provider_id) REFERENCES llm_providers(id)
+);
+"#,
+    )
+    .expect("schema v5 (partial)");
+    conn.pragma_update(None, "user_version", 5)
+        .expect("set user_version=5");
+
+    conn.execute(
+        "INSERT INTO llm_providers (id, name, provider_type, base_url, api_key_env, default_model, created_at_ms, updated_at_ms, api_key)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        rusqlite::params![
+            "p1",
+            "openai-main",
+            "openai",
+            "https://api.openai.com/v1",
+            Option::<String>::None,
+            "gpt-4o-mini",
+            1_i64,
+            1_i64,
+            Option::<String>::None
+        ],
+    )
+    .expect("insert provider");
+    conn.execute(
+        "INSERT INTO llm_agents (id, name, provider_id, model, prompt_md, created_at_ms, updated_at_ms)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        rusqlite::params!["a1", "agent-1", "p1", Option::<String>::None, "PROMPT_V5", 1_i64, 1_i64],
+    )
+    .expect("insert agent");
+
+    drop(conn);
+
+    let store = SkillStore::new(db);
+    store.ensure_schema().expect("ensure_schema migrates to v6");
+
+    let conn = Connection::open(store.db_path()).expect("open2");
+    let user_version: i32 = conn
+        .query_row("PRAGMA user_version;", [], |row| row.get(0))
+        .expect("user_version");
+    assert_eq!(user_version, 6);
+
+    let prompts_tables: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='llm_prompts';",
+            [],
+            |row| row.get(0),
+        )
+        .expect("prompts table exists");
+    assert_eq!(prompts_tables, 1);
+
+    let cols: Vec<String> = conn
+        .prepare("PRAGMA table_info(llm_agents);")
+        .expect("pragma stmt agents")
+        .query_map([], |row| row.get::<_, String>(1))
+        .expect("pragma rows agents")
+        .map(|r| r.expect("col"))
+        .collect();
+    assert!(cols.contains(&"prompt_id".to_string()));
+
+    let (prompt_id, prompt_md): (String, String) = conn
+        .query_row(
+            "SELECT prompt_id, prompt_md FROM llm_agents WHERE id = ?1",
+            ["a1"],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("agent prompt_id populated");
+    assert!(!prompt_id.trim().is_empty());
+    assert_eq!(prompt_md, "PROMPT_V5");
+
+    let stored_prompt: String = conn
+        .query_row(
+            "SELECT prompt_md FROM llm_prompts WHERE id = ?1",
+            [prompt_id],
+            |row| row.get(0),
+        )
+        .expect("prompt row exists");
+    assert_eq!(stored_prompt, "PROMPT_V5");
 }
 
 #[test]

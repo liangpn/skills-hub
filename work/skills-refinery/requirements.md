@@ -56,13 +56,14 @@ skills 数量膨胀会带来：
 ## 已确认的决策（v1）
 
 - 点评 Agent：走 API（不走 CLI），首选 OpenAI。
-- Key 配置：不在 App 内录入；通过用户预先配置的环境变量（可通过 `.env` 文件加载）提供。
+- Key 配置：可在 App 内录入并存入本机 sqlite；也可通过 `~/.work-rules/.env` 的环境变量提供（若同时配置，以 sqlite 的 api_key 为准）。
 - 产出：默认写入 `~/.work-rules`（作为通用资产库）；再由用户选择导出到具体工具目录（copy/symlink）。
 - skill 格式：以 `https://agentskills.io/` 的标准为准。
 - 工作准则（work_rule）统一保存目录：`~/.work-rules`（与 `~/.skillshub` 同级）。
 - 工作准则（work_rule）资产结构：每条资产固定 1 个“入口文件”（规范正文）；导入项目时可重命名该文件。
 - 工作准则导入项目：默认 `copy`；支持 `symlink`（需风险提示）。
   - 若系统/权限不允许创建 symlink：提示原因，并提供“改用 copy”选项让用户决定（不自动 fallback）。
+- Prompts：作为独立资产管理（Prompts Tab）；Agent 由 `provider + prompt` 组成（可指定 model 覆盖默认模型）。
 
 ## 仍需确认（为进入实现做准备）
 

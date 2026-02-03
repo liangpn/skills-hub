@@ -28,8 +28,8 @@ use crate::core::refinery_export::export_skill_to_root;
 use crate::core::llm_runner::run_llm;
 use crate::core::skill_audit::build_skill_audit_source_md;
 use crate::core::skill_store::{
-    LlmAgentRecord, LlmProviderRecord, SkillStore, SkillTargetRecord, SkillUsageLeaderboardRow,
-    SkillUsageProjectRow,
+    LlmAgentRecord, LlmPromptRecord, LlmProviderRecord, SkillStore, SkillTargetRecord,
+    SkillUsageLeaderboardRow, SkillUsageProjectRow,
 };
 use crate::core::sync_engine::{
     copy_dir_recursive, sync_dir_for_tool_with_overwrite, sync_dir_hybrid, SyncMode,
@@ -431,6 +431,113 @@ pub async fn delete_llm_provider(store: State<'_, SkillStore>, id: String) -> Re
 }
 
 #[tauri::command]
+pub async fn list_llm_prompts(store: State<'_, SkillStore>) -> Result<Vec<LlmPromptRecord>, String> {
+    let store = store.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || store.list_llm_prompts())
+        .await
+        .map_err(|err| err.to_string())?
+        .map_err(format_anyhow_error)
+}
+
+#[tauri::command]
+pub async fn get_llm_prompt(store: State<'_, SkillStore>, id: String) -> Result<LlmPromptRecord, String> {
+    let store = store.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(p) = store.get_llm_prompt_by_id(&id)? else {
+            anyhow::bail!("prompt not found: {}", id);
+        };
+        Ok::<_, anyhow::Error>(p)
+    })
+    .await
+    .map_err(|err| err.to_string())?
+    .map_err(format_anyhow_error)
+}
+
+#[tauri::command]
+#[allow(non_snake_case)]
+pub async fn create_llm_prompt(
+    store: State<'_, SkillStore>,
+    name: String,
+    promptMd: String,
+) -> Result<LlmPromptRecord, String> {
+    let store = store.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            anyhow::bail!("prompt name is empty");
+        }
+        if promptMd.trim().is_empty() {
+            anyhow::bail!("prompt is empty");
+        }
+        let now = now_ms();
+        let record = LlmPromptRecord {
+            id: Uuid::new_v4().to_string(),
+            name,
+            prompt_md: promptMd,
+            created_at_ms: now,
+            updated_at_ms: now,
+        };
+        store.upsert_llm_prompt(&record)?;
+        Ok::<_, anyhow::Error>(record)
+    })
+    .await
+    .map_err(|err| err.to_string())?
+    .map_err(format_anyhow_error)
+}
+
+#[tauri::command]
+#[allow(non_snake_case)]
+pub async fn update_llm_prompt(
+    store: State<'_, SkillStore>,
+    id: String,
+    name: String,
+    promptMd: String,
+) -> Result<(), String> {
+    let store = store.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(existing) = store.get_llm_prompt_by_id(&id)? else {
+            anyhow::bail!("prompt not found: {}", id);
+        };
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            anyhow::bail!("prompt name is empty");
+        }
+        if promptMd.trim().is_empty() {
+            anyhow::bail!("prompt is empty");
+        }
+        let now = now_ms();
+        let record = LlmPromptRecord {
+            id: existing.id,
+            name,
+            prompt_md: promptMd,
+            created_at_ms: existing.created_at_ms,
+            updated_at_ms: now,
+        };
+        store.upsert_llm_prompt(&record)?;
+        Ok::<_, anyhow::Error>(())
+    })
+    .await
+    .map_err(|err| err.to_string())?
+    .map_err(format_anyhow_error)
+}
+
+#[tauri::command]
+pub async fn delete_llm_prompt(store: State<'_, SkillStore>, id: String) -> Result<(), String> {
+    let store = store.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let in_use = store.count_llm_agents_for_prompt(&id)?;
+        if in_use > 0 {
+            anyhow::bail!("prompt is in use by {} agents", in_use);
+        }
+        store.delete_llm_prompt(&id)?;
+        Ok::<_, anyhow::Error>(())
+    })
+    .await
+    .map_err(|err| err.to_string())?
+    .map_err(format_anyhow_error)
+}
+
+#[tauri::command]
 pub async fn list_llm_agents(store: State<'_, SkillStore>) -> Result<Vec<LlmAgentRecord>, String> {
     let store = store.inner().clone();
     tauri::async_runtime::spawn_blocking(move || store.list_llm_agents())
@@ -460,7 +567,7 @@ pub async fn create_llm_agent(
     name: String,
     providerId: String,
     model: Option<String>,
-    promptMd: String,
+    promptId: String,
 ) -> Result<LlmAgentRecord, String> {
     let store = store.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -474,6 +581,13 @@ pub async fn create_llm_agent(
         if store.get_llm_provider_by_id(&providerId)?.is_none() {
             anyhow::bail!("provider not found: {}", providerId);
         }
+        let prompt_id = promptId.trim().to_string();
+        if prompt_id.is_empty() {
+            anyhow::bail!("promptId is empty");
+        }
+        let Some(prompt) = store.get_llm_prompt_by_id(&prompt_id)? else {
+            anyhow::bail!("prompt not found: {}", prompt_id);
+        };
         let now = now_ms();
         let record = LlmAgentRecord {
             id: Uuid::new_v4().to_string(),
@@ -483,7 +597,8 @@ pub async fn create_llm_agent(
                 let t = s.trim().to_string();
                 if t.is_empty() { None } else { Some(t) }
             }),
-            prompt_md: promptMd,
+            prompt_md: prompt.prompt_md,
+            prompt_id: Some(prompt_id),
             created_at_ms: now,
             updated_at_ms: now,
         };
@@ -503,7 +618,7 @@ pub async fn update_llm_agent(
     name: String,
     providerId: String,
     model: Option<String>,
-    promptMd: String,
+    promptId: String,
 ) -> Result<(), String> {
     let store = store.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -520,6 +635,13 @@ pub async fn update_llm_agent(
         if store.get_llm_provider_by_id(&providerId)?.is_none() {
             anyhow::bail!("provider not found: {}", providerId);
         }
+        let prompt_id = promptId.trim().to_string();
+        if prompt_id.is_empty() {
+            anyhow::bail!("promptId is empty");
+        }
+        let Some(prompt) = store.get_llm_prompt_by_id(&prompt_id)? else {
+            anyhow::bail!("prompt not found: {}", prompt_id);
+        };
         let now = now_ms();
         let record = LlmAgentRecord {
             id: existing.id,
@@ -529,7 +651,8 @@ pub async fn update_llm_agent(
                 let t = s.trim().to_string();
                 if t.is_empty() { None } else { Some(t) }
             }),
-            prompt_md: promptMd,
+            prompt_md: prompt.prompt_md,
+            prompt_id: Some(prompt_id),
             created_at_ms: existing.created_at_ms,
             updated_at_ms: now,
         };
@@ -568,6 +691,7 @@ pub async fn run_llm_agent(
         let Some(agent) = store.get_llm_agent_by_id(&agentId)? else {
             anyhow::bail!("agent not found: {}", agentId);
         };
+        let system_prompt = store.resolve_llm_agent_system_prompt(&agent)?;
         let Some(provider) = store.get_llm_provider_by_id(&agent.provider_id)? else {
             anyhow::bail!("provider not found: {}", agent.provider_id);
         };
@@ -605,7 +729,7 @@ pub async fn run_llm_agent(
             &base_url,
             api_key.as_deref(),
             &model,
-            &agent.prompt_md,
+            &system_prompt,
             &user_prompt,
         )?;
         Ok::<_, anyhow::Error>(out)
@@ -1948,6 +2072,7 @@ pub async fn run_skill_audit(
         let Some(agent) = store.get_llm_agent_by_id(&agentId)? else {
             anyhow::bail!("agent not found: {}", agentId);
         };
+        let system_prompt = store.resolve_llm_agent_system_prompt(&agent)?;
         let Some(provider) = store.get_llm_provider_by_id(&agent.provider_id)? else {
             anyhow::bail!("provider not found: {}", agent.provider_id);
         };
@@ -1986,7 +2111,7 @@ pub async fn run_skill_audit(
             &base_url,
             api_key.as_deref(),
             &model,
-            &agent.prompt_md,
+            &system_prompt,
             &user_prompt,
         )?;
         Ok::<_, anyhow::Error>(out)

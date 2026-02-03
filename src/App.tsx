@@ -26,6 +26,7 @@ import WorkRulesPanel from './components/workRules/WorkRulesPanel'
 import RefineryPanel from './components/refinery/RefineryPanel'
 import AgentsPanel from './components/agents/AgentsPanel'
 import ProvidersPanel from './components/providers/ProvidersPanel'
+import PromptsPanel from './components/prompts/PromptsPanel'
 import SkillAuditPanel from './components/audit/SkillAuditPanel'
 
 function App() {
@@ -72,7 +73,7 @@ function App() {
   const [sortBy, setSortBy] = useState<'updated' | 'name'>('updated')
   const [addModalTab, setAddModalTab] = useState<'local' | 'git'>('git')
   const [activeTab, setActiveTab] = useState<
-    'skills' | 'analytics' | 'work_rules' | 'refinery' | 'audit' | 'providers' | 'agents'
+    'skills' | 'analytics' | 'work_rules' | 'refinery' | 'audit' | 'providers' | 'prompts' | 'agents'
   >('skills')
 
   const isTauri =
@@ -1292,6 +1293,16 @@ function App() {
             </button>
             <button
               type="button"
+              className={`top-tab ${activeTab === 'prompts' ? 'active' : ''}`}
+              aria-selected={activeTab === 'prompts'}
+              onClick={() => setActiveTab('prompts')}
+              disabled={!isTauri}
+              title={!isTauri ? t('errors.notTauri') : undefined}
+            >
+              {t('tabs.prompts')}
+            </button>
+            <button
+              type="button"
               className={`top-tab ${activeTab === 'agents' ? 'active' : ''}`}
               aria-selected={activeTab === 'agents'}
               onClick={() => setActiveTab('agents')}
@@ -1343,6 +1354,8 @@ function App() {
             <SkillAuditPanel isTauri={isTauri} invokeTauri={invokeTauri} t={t} />
           ) : activeTab === 'providers' ? (
             <ProvidersPanel isTauri={isTauri} invokeTauri={invokeTauri} t={t} />
+          ) : activeTab === 'prompts' ? (
+            <PromptsPanel isTauri={isTauri} invokeTauri={invokeTauri} t={t} />
           ) : (
             <AgentsPanel isTauri={isTauri} invokeTauri={invokeTauri} t={t} />
           )}

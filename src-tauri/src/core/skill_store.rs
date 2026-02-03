@@ -10,7 +10,7 @@ const DB_FILE_NAME: &str = "skills_hub.db";
 const LEGACY_APP_IDENTIFIERS: &[&str] = &["com.tauri.dev", "com.tauri.dev.skillshub"];
 
 // Schema versioning: bump when making changes and add a migration step.
-const SCHEMA_VERSION: i32 = 5;
+const SCHEMA_VERSION: i32 = 6;
 
 // Minimal schema for MVP: skills, skill_targets, settings, discovered_skills(optional).
 const SCHEMA_V1: &str = r#"
@@ -131,6 +131,25 @@ const SCHEMA_V5: &str = r#"
 ALTER TABLE llm_providers ADD COLUMN api_key TEXT NULL;
 "#;
 
+// Schema v6: Prompts are managed separately from agents.
+const SCHEMA_V6: &str = r#"
+CREATE TABLE IF NOT EXISTS llm_prompts (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE,
+  prompt_md TEXT NOT NULL,
+  created_at_ms INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_llm_prompts_updated_at
+  ON llm_prompts(updated_at_ms);
+
+ALTER TABLE llm_agents ADD COLUMN prompt_id TEXT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_llm_agents_prompt
+  ON llm_agents(prompt_id);
+"#;
+
 #[derive(Clone, Debug)]
 pub struct SkillStore {
     db_path: PathBuf,
@@ -202,6 +221,16 @@ pub struct LlmAgentRecord {
     pub provider_id: String,
     pub model: Option<String>,
     pub prompt_md: String,
+    pub prompt_id: Option<String>,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct LlmPromptRecord {
+    pub id: String,
+    pub name: String,
+    pub prompt_md: String,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
 }
@@ -221,16 +250,19 @@ impl SkillStore {
             conn.execute_batch("PRAGMA foreign_keys = ON;")?;
 
             let user_version: i32 = conn.query_row("PRAGMA user_version;", [], |row| row.get(0))?;
+            let needs_prompt_backfill = user_version < 6;
             if user_version == 0 {
                 conn.execute_batch(SCHEMA_V1)?;
                 conn.execute_batch(SCHEMA_V3)?;
                 conn.execute_batch(SCHEMA_V4)?;
                 conn.execute_batch(SCHEMA_V5)?;
+                conn.execute_batch(SCHEMA_V6)?;
                 conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             } else if user_version == 1 {
                 conn.execute_batch(SCHEMA_V3)?;
                 conn.execute_batch(SCHEMA_V4)?;
                 conn.execute_batch(SCHEMA_V5)?;
+                conn.execute_batch(SCHEMA_V6)?;
                 conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             } else if user_version == 2 {
                 // v2 -> v3: migrate usage events to store skill_key + optional managed_skill_id.
@@ -290,13 +322,19 @@ CREATE INDEX IF NOT EXISTS idx_skill_usage_events_project
                 )?;
                 conn.execute_batch(SCHEMA_V4)?;
                 conn.execute_batch(SCHEMA_V5)?;
+                conn.execute_batch(SCHEMA_V6)?;
                 conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             } else if user_version == 3 {
                 conn.execute_batch(SCHEMA_V4)?;
                 conn.execute_batch(SCHEMA_V5)?;
+                conn.execute_batch(SCHEMA_V6)?;
                 conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             } else if user_version == 4 {
                 conn.execute_batch(SCHEMA_V5)?;
+                conn.execute_batch(SCHEMA_V6)?;
+                conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+            } else if user_version == 5 {
+                conn.execute_batch(SCHEMA_V6)?;
                 conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             } else if user_version > SCHEMA_VERSION {
                 anyhow::bail!(
@@ -304,6 +342,10 @@ CREATE INDEX IF NOT EXISTS idx_skill_usage_events_project
                     user_version,
                     SCHEMA_VERSION
                 );
+            }
+
+            if needs_prompt_backfill {
+                backfill_prompts_from_agents(conn)?;
             }
 
             Ok(())
@@ -555,6 +597,97 @@ CREATE INDEX IF NOT EXISTS idx_skill_usage_events_project
         })
     }
 
+    pub fn list_llm_prompts(&self) -> Result<Vec<LlmPromptRecord>> {
+        self.with_conn(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT id, name, prompt_md, created_at_ms, updated_at_ms
+         FROM llm_prompts
+         ORDER BY updated_at_ms DESC",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok(LlmPromptRecord {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    prompt_md: row.get(2)?,
+                    created_at_ms: row.get(3)?,
+                    updated_at_ms: row.get(4)?,
+                })
+            })?;
+
+            let mut items = Vec::new();
+            for row in rows {
+                items.push(row?);
+            }
+            Ok(items)
+        })
+    }
+
+    pub fn get_llm_prompt_by_id(&self, id: &str) -> Result<Option<LlmPromptRecord>> {
+        self.with_conn(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT id, name, prompt_md, created_at_ms, updated_at_ms
+         FROM llm_prompts
+         WHERE id = ?1
+         LIMIT 1",
+            )?;
+            let mut rows = stmt.query(params![id])?;
+            if let Some(row) = rows.next()? {
+                Ok(Some(LlmPromptRecord {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    prompt_md: row.get(2)?,
+                    created_at_ms: row.get(3)?,
+                    updated_at_ms: row.get(4)?,
+                }))
+            } else {
+                Ok(None)
+            }
+        })
+    }
+
+    pub fn upsert_llm_prompt(&self, record: &LlmPromptRecord) -> Result<()> {
+        self.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO llm_prompts (
+          id, name, prompt_md, created_at_ms, updated_at_ms
+        ) VALUES (
+          ?1, ?2, ?3, ?4, ?5
+        )
+        ON CONFLICT(id) DO UPDATE SET
+          name = excluded.name,
+          prompt_md = excluded.prompt_md,
+          created_at_ms = excluded.created_at_ms,
+          updated_at_ms = excluded.updated_at_ms",
+                params![
+                    record.id,
+                    record.name,
+                    record.prompt_md,
+                    record.created_at_ms,
+                    record.updated_at_ms
+                ],
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn count_llm_agents_for_prompt(&self, prompt_id: &str) -> Result<i64> {
+        self.with_conn(|conn| {
+            let count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM llm_agents WHERE prompt_id = ?1",
+                params![prompt_id],
+                |row| row.get(0),
+            )?;
+            Ok(count)
+        })
+    }
+
+    pub fn delete_llm_prompt(&self, prompt_id: &str) -> Result<()> {
+        self.with_conn(|conn| {
+            conn.execute("DELETE FROM llm_prompts WHERE id = ?1", params![prompt_id])?;
+            Ok(())
+        })
+    }
+
     pub fn get_llm_provider_by_id(&self, id: &str) -> Result<Option<LlmProviderRecord>> {
         self.with_conn(|conn| {
             let mut stmt = conn.prepare(
@@ -636,7 +769,7 @@ CREATE INDEX IF NOT EXISTS idx_skill_usage_events_project
     pub fn list_llm_agents(&self) -> Result<Vec<LlmAgentRecord>> {
         self.with_conn(|conn| {
             let mut stmt = conn.prepare(
-                "SELECT id, name, provider_id, model, prompt_md, created_at_ms, updated_at_ms
+                "SELECT id, name, provider_id, model, prompt_md, prompt_id, created_at_ms, updated_at_ms
          FROM llm_agents
          ORDER BY updated_at_ms DESC",
             )?;
@@ -647,8 +780,9 @@ CREATE INDEX IF NOT EXISTS idx_skill_usage_events_project
                     provider_id: row.get(2)?,
                     model: row.get(3)?,
                     prompt_md: row.get(4)?,
-                    created_at_ms: row.get(5)?,
-                    updated_at_ms: row.get(6)?,
+                    prompt_id: row.get(5)?,
+                    created_at_ms: row.get(6)?,
+                    updated_at_ms: row.get(7)?,
                 })
             })?;
 
@@ -663,7 +797,7 @@ CREATE INDEX IF NOT EXISTS idx_skill_usage_events_project
     pub fn get_llm_agent_by_id(&self, id: &str) -> Result<Option<LlmAgentRecord>> {
         self.with_conn(|conn| {
             let mut stmt = conn.prepare(
-                "SELECT id, name, provider_id, model, prompt_md, created_at_ms, updated_at_ms
+                "SELECT id, name, provider_id, model, prompt_md, prompt_id, created_at_ms, updated_at_ms
          FROM llm_agents
          WHERE id = ?1
          LIMIT 1",
@@ -676,8 +810,9 @@ CREATE INDEX IF NOT EXISTS idx_skill_usage_events_project
                     provider_id: row.get(2)?,
                     model: row.get(3)?,
                     prompt_md: row.get(4)?,
-                    created_at_ms: row.get(5)?,
-                    updated_at_ms: row.get(6)?,
+                    prompt_id: row.get(5)?,
+                    created_at_ms: row.get(6)?,
+                    updated_at_ms: row.get(7)?,
                 }))
             } else {
                 Ok(None)
@@ -689,15 +824,16 @@ CREATE INDEX IF NOT EXISTS idx_skill_usage_events_project
         self.with_conn(|conn| {
             conn.execute(
                 "INSERT INTO llm_agents (
-          id, name, provider_id, model, prompt_md, created_at_ms, updated_at_ms
+          id, name, provider_id, model, prompt_md, prompt_id, created_at_ms, updated_at_ms
         ) VALUES (
-          ?1, ?2, ?3, ?4, ?5, ?6, ?7
+          ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8
         )
         ON CONFLICT(id) DO UPDATE SET
           name = excluded.name,
           provider_id = excluded.provider_id,
           model = excluded.model,
           prompt_md = excluded.prompt_md,
+          prompt_id = excluded.prompt_id,
           created_at_ms = excluded.created_at_ms,
           updated_at_ms = excluded.updated_at_ms",
                 params![
@@ -706,6 +842,7 @@ CREATE INDEX IF NOT EXISTS idx_skill_usage_events_project
                     record.provider_id,
                     record.model,
                     record.prompt_md,
+                    record.prompt_id,
                     record.created_at_ms,
                     record.updated_at_ms
                 ],
@@ -719,6 +856,21 @@ CREATE INDEX IF NOT EXISTS idx_skill_usage_events_project
             conn.execute("DELETE FROM llm_agents WHERE id = ?1", params![agent_id])?;
             Ok(())
         })
+    }
+
+    pub fn resolve_llm_agent_system_prompt(&self, agent: &LlmAgentRecord) -> Result<String> {
+        let prompt_id = agent
+            .prompt_id
+            .as_deref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty());
+        if let Some(id) = prompt_id {
+            let Some(p) = self.get_llm_prompt_by_id(id)? else {
+                anyhow::bail!("prompt not found: {}", id);
+            };
+            return Ok(p.prompt_md);
+        }
+        Ok(agent.prompt_md.clone())
     }
 
     pub fn get_codex_scan_cursor_last_line(&self, log_path: &str) -> Result<Option<i64>> {
@@ -964,6 +1116,67 @@ ORDER BY calls DESC, last_ts_ms DESC, project_path ASC;
         conn.execute_batch("PRAGMA foreign_keys = ON;")?;
         f(&conn)
     }
+}
+
+fn backfill_prompts_from_agents(conn: &Connection) -> Result<()> {
+    let has_llm_agents: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='llm_agents';",
+        [],
+        |row| row.get(0),
+    )?;
+    if has_llm_agents == 0 {
+        return Ok(());
+    }
+
+    let cols: Vec<String> = conn
+        .prepare("PRAGMA table_info(llm_agents);")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    if !cols.iter().any(|c| c == "prompt_id") {
+        return Ok(());
+    }
+
+    let mut stmt = conn.prepare(
+        "SELECT id, name, prompt_md, created_at_ms, updated_at_ms
+         FROM llm_agents
+         WHERE prompt_id IS NULL OR TRIM(prompt_id) = ''",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, i64>(3)?,
+            row.get::<_, i64>(4)?,
+        ))
+    })?;
+
+    for row in rows {
+        let (agent_id, agent_name, prompt_md, created_at_ms, updated_at_ms) = row?;
+        let prompt_id = Uuid::new_v4().to_string();
+
+        let try_insert = |name: &str| -> Result<()> {
+            conn.execute(
+                "INSERT INTO llm_prompts (id, name, prompt_md, created_at_ms, updated_at_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![prompt_id, name, prompt_md, created_at_ms, updated_at_ms],
+            )?;
+            Ok(())
+        };
+
+        if let Err(err) = try_insert(agent_name.trim()) {
+            // Name collisions are unlikely, but keep migration robust.
+            let fallback_name = format!("{} ({})", agent_name.trim(), &prompt_id[..8]);
+            try_insert(&fallback_name).with_context(|| format!("{:#}", err))?;
+        }
+
+        conn.execute(
+            "UPDATE llm_agents SET prompt_id = ?1 WHERE id = ?2",
+            params![prompt_id, agent_id],
+        )?;
+    }
+
+    Ok(())
 }
 
 pub fn default_db_path<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf> {

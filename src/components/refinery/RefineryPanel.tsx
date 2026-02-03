@@ -3274,16 +3274,15 @@ export default function RefineryPanel({
 	                    >
 	                      {exportSourceCollapsed ? null : (
 	                        <div className="refinery-diff-pane">
-	                          <div className="refinery-diff-title">{t('refinery.diffSource')}</div>
-	                          {exportLoading ? (
-	                            <div className="analytics-empty">{t('analytics.loading')}</div>
-	                          ) : (
-	                            <div className="markdown-preview markdown-preview-fill">
-	                              <ReactMarkdown remarkPlugins={[remarkGfm]}>
-	                                {exportContent.trim() ? exportContent : t('workRules.previewEmpty')}
-	                              </ReactMarkdown>
-	                            </div>
-	                          )}
+	                          <div className="refinery-diff-title-row">
+	                            <div className="refinery-diff-title">{t('refinery.diffSource')}</div>
+	                            <div className="refinery-diff-title-row-actions" />
+	                          </div>
+	                          <div className="markdown-preview markdown-preview-fill">
+	                            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+	                              {exportContent.trim() ? exportContent : t('workRules.previewEmpty')}
+	                            </ReactMarkdown>
+	                          </div>
 	                        </div>
 	                      )}
 	                      <div className="refinery-diff-pane">
@@ -3912,18 +3911,17 @@ export default function RefineryPanel({
 	                    >
 	                      {exportSkillSourceCollapsed ? null : (
 	                        <div className="refinery-diff-pane">
-	                          <div className="refinery-diff-title">{t('refinery.diffSource')}</div>
-	                          {exportSkillLoading ? (
-	                            <div className="analytics-empty">{t('analytics.loading')}</div>
-	                          ) : (
-	                            <div className="markdown-preview markdown-preview-fill">
-	                              <ReactMarkdown remarkPlugins={[remarkGfm]}>
-	                                {exportSkillContent.trim()
-	                                  ? exportSkillContent
-	                                  : t('workRules.previewEmpty')}
-	                              </ReactMarkdown>
-	                            </div>
-	                          )}
+	                          <div className="refinery-diff-title-row">
+	                            <div className="refinery-diff-title">{t('refinery.diffSource')}</div>
+	                            <div className="refinery-diff-title-row-actions" />
+	                          </div>
+	                          <div className="markdown-preview markdown-preview-fill">
+	                            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+	                              {exportSkillContent.trim()
+	                                ? exportSkillContent
+	                                : t('workRules.previewEmpty')}
+	                            </ReactMarkdown>
+	                          </div>
 	                        </div>
 	                      )}
 	                      <div className="refinery-diff-pane">

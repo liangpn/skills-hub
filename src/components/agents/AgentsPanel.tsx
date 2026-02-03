@@ -23,6 +23,15 @@ type LlmAgent = {
   provider_id: string
   model: string | null
   prompt_md: string
+  prompt_id: string | null
+  created_at_ms: number
+  updated_at_ms: number
+}
+
+type LlmPrompt = {
+  id: string
+  name: string
+  prompt_md: string
   created_at_ms: number
   updated_at_ms: number
 }
@@ -48,6 +57,7 @@ const providerTypeLabel = (t: TFunction, type: string) => {
 
 export default function AgentsPanel({ isTauri, invokeTauri, t }: AgentsPanelProps) {
   const [providers, setProviders] = useState<LlmProvider[]>([])
+  const [prompts, setPrompts] = useState<LlmPrompt[]>([])
   const [agents, setAgents] = useState<LlmAgent[]>([])
   const [loading, setLoading] = useState(false)
 
@@ -58,18 +68,19 @@ export default function AgentsPanel({ isTauri, invokeTauri, t }: AgentsPanelProp
   const [name, setName] = useState('')
   const [providerId, setProviderId] = useState('')
   const [model, setModel] = useState('')
-  const [prompt, setPrompt] = useState('')
-  const [promptTab, setPromptTab] = useState<'edit' | 'preview'>('edit')
+  const [promptId, setPromptId] = useState('')
 
   const loadAll = useCallback(async () => {
     if (!isTauri) return
     setLoading(true)
     try {
-      const [p, a] = await Promise.all([
+      const [p, pr, a] = await Promise.all([
         invokeTauri<LlmProvider[]>('list_llm_providers'),
+        invokeTauri<LlmPrompt[]>('list_llm_prompts'),
         invokeTauri<LlmAgent[]>('list_llm_agents'),
       ])
       setProviders(p)
+      setPrompts(pr)
       setAgents(a)
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err))
@@ -88,18 +99,27 @@ export default function AgentsPanel({ isTauri, invokeTauri, t }: AgentsPanelProp
     return map
   }, [providers])
 
+  const promptById = useMemo(() => {
+    const map = new Map<string, LlmPrompt>()
+    for (const p of prompts) map.set(p.id, p)
+    return map
+  }, [prompts])
+
   const openCreate = useCallback(() => {
     if (providers.length === 0) {
       toast.error(t('agents.noProviders'))
       return
     }
+    if (prompts.length === 0) {
+      toast.error(t('agents.noPrompts'))
+      return
+    }
     setName('')
     setProviderId(providers[0]?.id ?? '')
     setModel('')
-    setPrompt('')
-    setPromptTab('edit')
+    setPromptId(prompts[0]?.id ?? '')
     setShowCreate(true)
-  }, [providers, t])
+  }, [providers, prompts, t])
 
   const closeCreate = useCallback(() => setShowCreate(false), [])
 
@@ -116,8 +136,7 @@ export default function AgentsPanel({ isTauri, invokeTauri, t }: AgentsPanelProp
         setName(a.name)
         setProviderId(a.provider_id)
         setModel(a.model ?? '')
-        setPrompt(a.prompt_md)
-        setPromptTab('edit')
+        setPromptId(a.prompt_id ?? prompts[0]?.id ?? '')
         setShowEdit(true)
       } catch (err) {
         toast.error(err instanceof Error ? err.message : String(err))
@@ -125,7 +144,7 @@ export default function AgentsPanel({ isTauri, invokeTauri, t }: AgentsPanelProp
         setLoading(false)
       }
     },
-    [invokeTauri, isTauri, t],
+    [invokeTauri, isTauri, prompts, t],
   )
 
   const closeEdit = useCallback(() => {
@@ -146,13 +165,17 @@ export default function AgentsPanel({ isTauri, invokeTauri, t }: AgentsPanelProp
       toast.error(t('agents.agentProviderRequired'))
       return
     }
+    if (!promptId) {
+      toast.error(t('agents.agentPromptRequired'))
+      return
+    }
     setLoading(true)
     try {
       await invokeTauri<LlmAgent>('create_llm_agent', {
         name: name.trim(),
         providerId,
         model: model.trim() ? model.trim() : null,
-        promptMd: prompt,
+        promptId,
       })
       toast.success(t('agents.agentCreated'))
       setShowCreate(false)
@@ -162,7 +185,7 @@ export default function AgentsPanel({ isTauri, invokeTauri, t }: AgentsPanelProp
     } finally {
       setLoading(false)
     }
-  }, [invokeTauri, isTauri, loadAll, model, name, prompt, providerId, t])
+  }, [invokeTauri, isTauri, loadAll, model, name, promptId, providerId, t])
 
   const onSubmitEdit = useCallback(async () => {
     if (!isTauri) {
@@ -178,6 +201,10 @@ export default function AgentsPanel({ isTauri, invokeTauri, t }: AgentsPanelProp
       toast.error(t('agents.agentProviderRequired'))
       return
     }
+    if (!promptId) {
+      toast.error(t('agents.agentPromptRequired'))
+      return
+    }
     setLoading(true)
     try {
       await invokeTauri('update_llm_agent', {
@@ -185,7 +212,7 @@ export default function AgentsPanel({ isTauri, invokeTauri, t }: AgentsPanelProp
         name: name.trim(),
         providerId,
         model: model.trim() ? model.trim() : null,
-        promptMd: prompt,
+        promptId,
       })
       toast.success(t('agents.agentSaved'))
       setShowEdit(false)
@@ -196,7 +223,7 @@ export default function AgentsPanel({ isTauri, invokeTauri, t }: AgentsPanelProp
     } finally {
       setLoading(false)
     }
-  }, [editId, invokeTauri, isTauri, loadAll, model, name, prompt, providerId, t])
+  }, [editId, invokeTauri, isTauri, loadAll, model, name, promptId, providerId, t])
 
   const deleteAgent = useCallback(
     async (id: string) => {
@@ -233,9 +260,9 @@ export default function AgentsPanel({ isTauri, invokeTauri, t }: AgentsPanelProp
   return (
     <div className="analytics-page">
       <div className="analytics-card">
-        <div className="refinery-card-header">
-          <div className="analytics-card-title">{t('agents.agentsTitle')}</div>
-          <div className="refinery-card-actions">
+          <div className="refinery-card-header">
+            <div className="analytics-card-title">{t('agents.agentsTitle')}</div>
+            <div className="refinery-card-actions">
             <button className="btn btn-primary" type="button" onClick={openCreate} disabled={loading}>
               <Plus size={16} aria-hidden="true" />
               {t('agents.newAgent')}
@@ -264,6 +291,8 @@ export default function AgentsPanel({ isTauri, invokeTauri, t }: AgentsPanelProp
               const p = providerById.get(a.provider_id)
               const pLabel = p ? `${p.name} (${providerTypeLabel(t, p.provider_type)})` : a.provider_id
               const m = a.model ?? p?.default_model ?? ''
+              const pr = a.prompt_id ? promptById.get(a.prompt_id) : null
+              const prLabel = pr ? pr.name : a.prompt_id ?? ''
               return (
                 <div
                   key={a.id}
@@ -277,6 +306,7 @@ export default function AgentsPanel({ isTauri, invokeTauri, t }: AgentsPanelProp
                     <div className="analytics-skill-id">
                       {pLabel}
                       {m ? ` · ${m}` : ''}
+                      {prLabel ? ` · ${prLabel}` : ''}
                     </div>
                   </div>
                   <div className="analytics-cell agents-row-actions" role="cell">
@@ -344,27 +374,27 @@ export default function AgentsPanel({ isTauri, invokeTauri, t }: AgentsPanelProp
                     <label className="label">{t('agents.agentModel')}</label>
                     <input className="input" value={model} onChange={(e) => setModel(e.target.value)} placeholder={t('agents.agentModelPlaceholder')} />
                   </div>
+                  <div className="form-group">
+                    <label className="label">{t('agents.agentPrompt')}</label>
+                    <select className="input" value={promptId} onChange={(e) => setPromptId(e.target.value)}>
+                      {prompts.map((p) => (
+                        <option value={p.id} key={p.id}>
+                          {p.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
                 <div className="work-rules-editor-right">
                   <div className="form-group">
-                    <label className="label">{t('agents.agentPrompt')}</label>
-                    <div className="tabs">
-                      <button className={`tab-item${promptTab === 'edit' ? ' active' : ''}`} type="button" onClick={() => setPromptTab('edit')} disabled={loading}>
-                        {t('workRules.contentEditTab')}
-                      </button>
-                      <button className={`tab-item${promptTab === 'preview' ? ' active' : ''}`} type="button" onClick={() => setPromptTab('preview')} disabled={loading}>
-                        {t('workRules.contentPreviewTab')}
-                      </button>
+                    <label className="label">{t('workRules.contentPreviewTab')}</label>
+                    <div className="markdown-preview">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                        {promptId && promptById.get(promptId)?.prompt_md
+                          ? promptById.get(promptId)?.prompt_md
+                          : t('workRules.previewEmpty')}
+                      </ReactMarkdown>
                     </div>
-                    {promptTab === 'edit' ? (
-                      <textarea className="input" value={prompt} onChange={(e) => setPrompt(e.target.value)} rows={16} />
-                    ) : (
-                      <div className="markdown-preview">
-                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                          {prompt.trim() ? prompt : t('workRules.previewEmpty')}
-                        </ReactMarkdown>
-                      </div>
-                    )}
                   </div>
                 </div>
               </div>
@@ -411,27 +441,27 @@ export default function AgentsPanel({ isTauri, invokeTauri, t }: AgentsPanelProp
                     <label className="label">{t('agents.agentModel')}</label>
                     <input className="input" value={model} onChange={(e) => setModel(e.target.value)} placeholder={t('agents.agentModelPlaceholder')} />
                   </div>
+                  <div className="form-group">
+                    <label className="label">{t('agents.agentPrompt')}</label>
+                    <select className="input" value={promptId} onChange={(e) => setPromptId(e.target.value)}>
+                      {prompts.map((p) => (
+                        <option value={p.id} key={p.id}>
+                          {p.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
                 <div className="work-rules-editor-right">
                   <div className="form-group">
-                    <label className="label">{t('agents.agentPrompt')}</label>
-                    <div className="tabs">
-                      <button className={`tab-item${promptTab === 'edit' ? ' active' : ''}`} type="button" onClick={() => setPromptTab('edit')} disabled={loading}>
-                        {t('workRules.contentEditTab')}
-                      </button>
-                      <button className={`tab-item${promptTab === 'preview' ? ' active' : ''}`} type="button" onClick={() => setPromptTab('preview')} disabled={loading}>
-                        {t('workRules.contentPreviewTab')}
-                      </button>
+                    <label className="label">{t('workRules.contentPreviewTab')}</label>
+                    <div className="markdown-preview">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                        {promptId && promptById.get(promptId)?.prompt_md
+                          ? promptById.get(promptId)?.prompt_md
+                          : t('workRules.previewEmpty')}
+                      </ReactMarkdown>
                     </div>
-                    {promptTab === 'edit' ? (
-                      <textarea className="input" value={prompt} onChange={(e) => setPrompt(e.target.value)} rows={16} />
-                    ) : (
-                      <div className="markdown-preview">
-                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                          {prompt.trim() ? prompt : t('workRules.previewEmpty')}
-                        </ReactMarkdown>
-                      </div>
-                    )}
                   </div>
                 </div>
               </div>
